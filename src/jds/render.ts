@@ -102,11 +102,12 @@ export function renderDocumentHtml(view: DocumentViewModel): string {
     <div class="recipient">${recipient || '<span class="recipient-empty">宛名</span>'}</div>
     <div class="issuer"><strong>${escapeHtml(issuer.legalName)}</strong>${issuer.postalCode ? `<div>〒${escapeHtml(issuer.postalCode)}</div>` : ""}${issuer.address ? `<div>${escapeHtml(issuer.address)}</div>` : ""}${issuer.representative ? `<div>${escapeHtml(issuer.representative)}</div>` : ""}${issuer.registrationNumber ? `<div>${escapeHtml(issuer.registrationNumber)}</div>` : ""}</div>
     ${data.subject ? `<div class="subject">件名：${escapeHtml(data.subject)}</div>` : ""}
-    ${!delivery ? `<div class="amount"><span>${data.type === "QT" ? "御見積金額" : data.type === "PO" ? "発注金額" : data.type === "RC" ? "領収金額" : "ご請求金額"}</span><strong>${escapeHtml(formatYen(totals.totalYen))}－</strong></div>` : ""}
+    ${!delivery ? `<div class="amount"><span>${data.type === "QT" ? "御見積金額" : data.type === "PO" ? "発注金額" : data.type === "OC" ? "受注確認金額" : data.type === "RC" ? "領収金額" : "ご請求金額"}</span><strong>${escapeHtml(formatYen(totals.totalYen))}－</strong></div>` : ""}
     <table>${columns}<thead><tr><th>№</th><th>品名・内容</th><th class="number">数量</th><th class="unit">単位</th>${showAmount ? `${!delivery ? '<th class="tax">税区分</th>' : ""}<th class="money">金額</th>` : ""}</tr></thead><tbody>${lineRows}</tbody></table>
     ${summary}
     <section class="conditions"><h2>備考</h2><div class="notes">${escapeHtml(data.notes || "")}</div></section>
     ${data.validUntil ? `<section class="conditions"><h2>見積有効期限</h2><div>${escapeHtml(data.validUntil)}</div></section>` : ""}
+    ${data.type === "OC" && data.acceptedDate ? `<section class="conditions"><h2>受注日</h2><div>${escapeHtml(data.acceptedDate)}</div></section>` : ""}
     ${data.dueDate && data.type === "INV" ? `<section class="conditions"><h2>お支払期限</h2><div>${escapeHtml(data.dueDate)}</div></section>` : ""}
     ${data.type === "INV" && (data.transactionDate || (data.periodStart && data.periodEnd)) ? `<section class="conditions"><h2>${data.transactionDate ? "取引年月日" : "取引期間"}</h2><div>${data.transactionDate ? escapeHtml(data.transactionDate) : `${escapeHtml(data.periodStart!)} ～ ${escapeHtml(data.periodEnd!)}`}</div></section>` : ""}
     ${data.deliveryDate || data.requestedDeliveryDate ? `<section class="conditions"><h2>${data.type === "PO" ? "希望納期" : "納期"}</h2><div>${escapeHtml(data.deliveryDate || data.requestedDeliveryDate || "")}</div></section>` : ""}
@@ -118,4 +119,9 @@ export function renderDocumentHtml(view: DocumentViewModel): string {
     ${data.type === "RC" ? `<section class="conditions"><h2>お支払方法</h2><div>${data.paymentMethod === "CASH" ? "現金" : data.paymentMethod === "BANK_TRANSFER" ? "銀行振込" : data.paymentMethod === "CARD" ? "カード" : "その他"}</div></section>` : ""}
     <footer class="footer"><span>${escapeHtml(issuer.legalName)}</span><span>${escapeHtml(view.number || "下書き")}${view.revision > 0 ? `・改訂${view.revision}` : ""}</span></footer>
   </main></body></html>`;
+}
+
+export function renderDocumentPreview(view: DocumentViewModel, fallbackHtml: string): { html: string; stale: boolean } {
+  try { return { html: renderDocumentHtml(view), stale: false }; }
+  catch { return { html: fallbackHtml, stale: true }; }
 }

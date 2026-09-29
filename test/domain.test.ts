@@ -3,7 +3,7 @@ import { calculateDocumentTax } from "../src/domain/tax";
 import { formatDocumentNumber } from "../src/domain/numbering";
 import { isOverdue, paymentState } from "../src/domain/payments";
 import { recipientLine, type DraftDocument } from "../src/domain/document";
-import { renderDocumentHtml } from "../src/jds/render";
+import { renderDocumentHtml, renderDocumentPreview } from "../src/jds/render";
 
 const line=(id:string,unitPrice:string,taxClass:"STANDARD_10"|"REDUCED_8"|"NON_TAXABLE"|"OUT_OF_SCOPE"|"EXEMPT"="STANDARD_10")=>({id,description:"作業一式",quantity:"1",unit:"式",unitPrice,taxClass});
 describe("document tax",()=>{
@@ -55,11 +55,18 @@ describe("JDS document renderer",()=>{
   it("renders all six Japanese document types with valid escaping and A4 geometry",()=>{
     const base={recipientName:"株式会社ABC",department:"営業部",contactName:"田中 太郎",recipientOverride:"",subject:"テスト<&>",issueDate:"2026-09-29",notes:"",taxMode:"exclusive" as const,showAmounts:false,deliveryPlace:"",paymentTerms:"",purchaseOrderNumber:"",quotationReference:"",purpose:"",paymentMethod:"BANK_TRANSFER" as const,lines:[line("a","1000")]};
     for(const type of ["QT","DN","INV","RC","PO","OC"] as const){
-      const data={...base,type} as DraftDocument;
+      const data={...base,type,acceptedDate:type==="OC"?"2026-09-30":undefined} as DraftDocument;
       const html=renderDocumentHtml({id:"fixture",number:"",revision:0,status:"DRAFT",data,issuer:{legalName:"株式会社サンプル"},theme:"standard",accentColor:"#315b78",tax:{mode:"exclusive",lineRounding:"floor",taxRounding:"floor"}});
       expect(html).toContain("size: A4 portrait");expect(html).toContain("株式会社ABC");expect(html).toContain("&lt;&amp;&gt;");expect(html).toContain({QT:"御見積書",DN:"納品書",INV:"請求書",RC:"領収書",PO:"発注書",OC:"注文請書"}[type]);
       if(type==="DN")expect(html).not.toContain("¥1,000");
+      if(type==="OC"){expect(html).toContain("受注確認金額");expect(html).toContain("受注日</h2><div>2026-09-30</div>")}
     }
+  });
+  it("keeps the last valid draft preview when an incomplete numeric field cannot render",()=>{
+    const data={type:"QT" as const,recipientName:"株式会社ABC",recipientPostalCode:"",recipientAddress:"",recipientBuilding:"",recipientPhone:"",department:"",contactName:"",recipientOverride:"",subject:"",issueDate:"2026-09-29",notes:"",taxMode:"exclusive" as const,showAmounts:false,deliveryPlace:"",paymentTerms:"",purchaseOrderNumber:"",quotationReference:"",purpose:"",paymentMethod:"BANK_TRANSFER" as const,validUntil:"2026-10-01",lines:[{...line("a","1000"),quantity:""}]};
+    const fallback="<p>previous valid preview</p>";
+    const result=renderDocumentPreview({id:"fixture",number:"",revision:0,status:"DRAFT",data,issuer:{legalName:"株式会社サンプル"},theme:"standard",accentColor:"#315b78",tax:{mode:"exclusive",lineRounding:"floor",taxRounding:"floor"}},fallback);
+    expect(result).toEqual({html:fallback,stale:true});
   });
   it("prints an invoice transaction date or complete transaction period",()=>{
     const base={type:"INV" as const,recipientName:"株式会社ABC",recipientPostalCode:"",recipientAddress:"",recipientBuilding:"",recipientPhone:"",department:"",contactName:"",recipientOverride:"",subject:"取引日確認",issueDate:"2026-09-29",notes:"",taxMode:"exclusive" as const,showAmounts:false,deliveryPlace:"",paymentTerms:"",purchaseOrderNumber:"",quotationReference:"",purpose:"",paymentMethod:"BANK_TRANSFER" as const,lines:[line("a","1000")]};
