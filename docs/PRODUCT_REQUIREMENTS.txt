@@ -1,0 +1,1871 @@
+PRODUCT REQUIREMENTS DOCUMENT
+
+Japanese Business Document & Sales Management App
+
+Version: 1.0
+Product type: Internal web application
+Primary market context: Japanese business operations
+Primary language: Japanese
+Deployment: Cloudflare
+Status: Planning baseline
+
+⸻
+
+1. PRODUCT VISION
+
+Build a lightweight internal web application for creating, issuing, storing and managing standardized Japanese business documents while providing simple sales, invoice and payment tracking.
+
+The application should replace fragmented workflows currently performed with Excel, Word, manually edited PDF templates and separate document folders.
+
+The product must be:
+
+* simple;
+* fast;
+* visually professional;
+* consistent;
+* suitable for Japanese business practice;
+* reliable for daily company operations;
+* optimized for standardized document creation;
+* capable of basic sales/payment visibility.
+
+The application is intentionally NOT:
+
+* a CRM;
+* an ERP;
+* an accounting system;
+* an inventory system;
+* a procurement platform;
+* an HR system;
+* a project-management system.
+
+The core philosophy is:
+
+Enter business information once, reuse it safely, generate professional Japanese business documents consistently, and retain reliable document history.
+
+⸻
+
+2. PRIMARY PRODUCT OBJECTIVES
+
+The application must enable employees to:
+
+1. Create standardized Japanese business documents quickly.
+2. Produce aesthetically professional A4 documents.
+3. Reuse counterparty, product and company information.
+4. Convert one business document into another without re-entering data.
+5. Generate reliable PDF and print output.
+6. Maintain issued-document history.
+7. Track invoices and payments.
+8. View basic sales information.
+9. Search historical documents efficiently.
+10. Standardize Japanese business-document practices across the company.
+
+Target performance with master data already available:
+
+* Create a normal 見積書 in under 60 seconds.
+* Convert 見積書 → 請求書 in under 10 seconds.
+* Locate an existing document in under 10 seconds.
+
+⸻
+
+3. TARGET USERS
+
+Primary users are internal company employees involved in:
+
+* sales administration;
+* general administration;
+* purchasing;
+* billing;
+* payment tracking;
+* business operations.
+
+Typical users should not need accounting expertise.
+
+The system must reduce the need for employees to understand formatting rules or manually reproduce Japanese business conventions.
+
+⸻
+
+4. PRODUCT SCOPE
+
+V1 supports six primary business documents.
+
+Sales-side documents
+
+1. 見積書 — Quotation
+2. 納品書 — Delivery Note
+3. 請求書 — Invoice
+4. 領収書 — Receipt
+
+Purchase-side documents
+
+5. 発注書 / 注文書 — Purchase Order
+6. 注文請書 — Order Confirmation
+
+These documents share one common document engine and design system.
+
+Do NOT build six unrelated document applications.
+
+⸻
+
+5. CORE BUSINESS WORKFLOWS
+
+5.1 Sales Workflow
+
+Primary flow:
+
+見積書
+↓
+納品書
+↓
+請求書
+↓
+入金登録
+↓
+領収書
+
+Alternative valid flows must remain possible.
+
+Examples:
+
+見積書
+↓
+請求書
+
+or:
+
+請求書 created directly without a quotation.
+
+The system must not force every transaction through every document type.
+
+⸻
+
+6. PURCHASE WORKFLOW
+
+Purchase-side workflow:
+
+発注書
+↓
+注文請書
+
+The system may record the relationship between these documents.
+
+V1 purchasing functionality ends here.
+
+Do NOT implement:
+
+* procurement management;
+* purchasing approval workflows;
+* inventory receiving;
+* warehouse operations;
+* stock management;
+* supplier performance management;
+* cost accounting.
+
+発注書 exists primarily because it is a common Japanese B2B document and useful for internal operations.
+
+⸻
+
+7. COUNTERPARTY MODEL
+
+Use the Japanese business concept:
+
+取引先
+
+rather than creating unrelated Customer and Supplier systems.
+
+A counterparty can have:
+
+* 得意先 — customer;
+* 仕入先 — supplier;
+* 両方 — both.
+
+Example:
+
+株式会社ABC
+取引区分：得意先
+
+株式会社XYZ
+取引区分：仕入先
+
+株式会社DEF
+取引区分：得意先・仕入先
+
+Counterparty records may include:
+
+* company name;
+* company name kana;
+* postal code;
+* prefecture;
+* address;
+* building;
+* telephone;
+* email;
+* website;
+* department;
+* contact person;
+* default payment terms;
+* notes.
+
+Multiple contacts should be supported.
+
+⸻
+
+8. MASTER DATA
+
+V1 requires three main master-data domains.
+
+8.1 Organization
+
+Store:
+
+* company name;
+* legal company name;
+* postal code;
+* address;
+* telephone;
+* email;
+* website;
+* representative information;
+* logo;
+* 印影;
+* 適格請求書発行事業者登録番号;
+* bank information;
+* default payment terms;
+* default tax settings;
+* document numbering settings;
+* document theme;
+* accent color.
+
+⸻
+
+8.2 Counterparties
+
+Store reusable 取引先 information.
+
+Support:
+
+* 得意先;
+* 仕入先;
+* both.
+
+⸻
+
+8.3 Products / Services
+
+Store:
+
+* product/service code;
+* name;
+* description;
+* default unit;
+* default price;
+* default tax classification;
+* active/inactive state.
+
+The system must still allow free-text document lines without creating product master records.
+
+⸻
+
+9. JAPANESE BUSINESS DOCUMENT DESIGN SYSTEM
+
+Create a shared design system named conceptually:
+
+Japanese Business Document Design System — JDS
+
+The six documents must visually belong to the same family.
+
+The design objective is:
+
+Japanese Minimal Corporate.
+
+The result must feel appropriate when sent to:
+
+* Japanese SMEs;
+* large Japanese companies;
+* hospitals;
+* clinics;
+* distributors;
+* manufacturers;
+* government-related organizations;
+* professional service firms.
+
+Avoid decorative SaaS-style invoice aesthetics.
+
+⸻
+
+10. PAPER STANDARD
+
+Primary format:
+
+A4 Portrait
+
+Dimensions:
+
+210 × 297 mm
+
+Recommended margins:
+
+Top: 16–18 mm
+Bottom: 15–18 mm
+Left: 16–18 mm
+Right: 16–18 mm
+
+Use a consistent layout grid.
+
+Recommended base spacing:
+
+4 mm.
+
+Documents must remain visually balanced when content is sparse.
+
+Documents must paginate correctly when content is long.
+
+⸻
+
+11. TYPOGRAPHY
+
+Preferred font stack:
+
+Noto Sans JP
+Hiragino Kaku Gothic ProN
+Yu Gothic
+sans-serif
+
+Suggested hierarchy:
+
+Document title:
+20–24 pt / Medium
+
+Primary amount:
+18–22 pt / Bold
+
+Section heading:
+9–10 pt / Medium
+
+Body:
+8.5–9.5 pt / Regular
+
+Metadata:
+8–9 pt
+
+Notes:
+approximately 8 pt
+
+Monetary values must use tabular-number behavior where possible.
+
+Amounts should normally be right aligned.
+
+Example:
+
+¥1,250,000
+
+Avoid visually noisy typography.
+
+⸻
+
+12. VISUAL PRINCIPLES
+
+Use:
+
+* whitespace;
+* typography;
+* alignment;
+* subtle horizontal rules;
+* restrained emphasis;
+* consistent spacing.
+
+Avoid:
+
+* excessive borders;
+* heavy tables;
+* unnecessary boxes;
+* gradients;
+* decorative backgrounds;
+* large colored areas;
+* consumer-style invoice designs.
+
+Documents should look professional in both digital PDF and printed form.
+
+⸻
+
+13. DOCUMENT THEMES
+
+Provide two themes.
+
+STANDARD
+
+Characteristics:
+
+* monochrome;
+* conservative;
+* traditional Japanese corporate appearance;
+* suitable for highly formal counterparties.
+
+MODERN
+
+Characteristics:
+
+* white;
+* charcoal;
+* restrained organization accent color;
+* more whitespace;
+* contemporary but professional.
+
+Accent color may appear only in restrained elements such as:
+
+* document title;
+* thin rule;
+* small highlight;
+* primary amount accent.
+
+Both themes must remain completely readable and aesthetically coherent when printed in grayscale.
+
+Do NOT build a drag-and-drop template editor.
+
+⸻
+
+14. COMMON DOCUMENT ANATOMY
+
+Documents should generally follow:
+
+1. Document title
+2. Recipient
+3. Document number
+4. Issue date
+5. Issuer
+6. Company registration information where applicable
+7. Subject
+8. Primary amount where relevant
+9. Line items
+10. Subtotal
+11. Tax breakdown
+12. Total
+13. Business conditions
+14. Payment information where relevant
+15. Notes
+
+Each document exposes only semantically appropriate fields.
+
+⸻
+
+15. RECIPIENT BUSINESS MANNER
+
+The system should assist with Japanese recipient formatting.
+
+Company recipient:
+
+株式会社ABC 御中
+
+Individual recipient:
+
+株式会社ABC
+営業部
+田中 太郎 様
+
+Do not append both 御中 and 様 incorrectly.
+
+Allow users to override automatically generated recipient formatting when necessary.
+
+Support:
+
+* company;
+* department;
+* contact person;
+* 御中;
+* 様.
+
+⸻
+
+16. 見積書 SPECIFICATION
+
+Title:
+
+御見積書
+
+or configurable:
+
+見積書
+
+Primary fields:
+
+* 見積番号;
+* 発行日;
+* 見積有効期限;
+* 宛名;
+* 件名;
+* 御見積金額;
+* 明細;
+* 納期;
+* 納品場所;
+* 支払条件;
+* 備考.
+
+Line items:
+
+* 品名・内容;
+* 数量;
+* 単位;
+* 単価;
+* 税区分;
+* 金額.
+
+Summary:
+
+* 小計;
+* 消費税;
+* 合計.
+
+Primary amount should be visually prominent.
+
+⸻
+
+17. 発注書 SPECIFICATION
+
+Title:
+
+発注書
+
+Alternative configurable title:
+
+注文書
+
+Fields:
+
+* 発注番号;
+* 発注日;
+* 発注先;
+* 発注者;
+* 件名;
+* 発注金額;
+* 明細;
+* 希望納期;
+* 納品場所;
+* 支払条件;
+* 備考.
+
+Optional reference:
+
+* 見積番号;
+* supplier quotation reference.
+
+Line items:
+
+* 品名;
+* 数量;
+* 単位;
+* 単価;
+* 税区分;
+* 金額.
+
+⸻
+
+18. 注文請書 SPECIFICATION
+
+Title:
+
+注文請書
+
+Fields:
+
+* 注文請書番号;
+* 受注日;
+* 注文者;
+* 受注者;
+* 注文番号;
+* 件名;
+* 受注内容;
+* 納期;
+* 納品場所;
+* 支払条件;
+* 備考.
+
+The document may reference a related 発注書.
+
+⸻
+
+19. 納品書 SPECIFICATION
+
+Title:
+
+納品書
+
+Fields:
+
+* 納品書番号;
+* 発行日;
+* 納品日;
+* 納品先;
+* 注文番号;
+* 件名;
+* 明細;
+* 備考.
+
+Line items:
+
+* 品名;
+* 数量;
+* 単位.
+
+Optional:
+
+* 単価;
+* 金額.
+
+Organization settings should allow:
+
+金額表示 ON / OFF
+
+because not every delivery note needs monetary information.
+
+⸻
+
+20. 請求書 SPECIFICATION
+
+Title:
+
+請求書
+
+This document requires the strictest tax and invoice handling.
+
+Fields:
+
+* 請求番号;
+* 請求日;
+* 請求先;
+* 件名;
+* transaction details;
+* 請求金額;
+* 税率別金額;
+* 税率別消費税;
+* 支払期限;
+* 振込先;
+* 適格請求書発行事業者登録番号;
+* 備考.
+
+The document engine must support current Japanese 適格請求書 requirements.
+
+Compliance-sensitive rules must be isolated and testable.
+
+Do not hard-code assumptions casually into UI components.
+
+⸻
+
+21. 領収書 SPECIFICATION
+
+Title:
+
+領収書
+
+Fields:
+
+* 領収番号;
+* 領収日;
+* 宛名;
+* 金額;
+* 但し書き;
+* 支払方法;
+* 税率別金額 where required;
+* 消費税額 where required;
+* issuer;
+* registration information;
+* 印影;
+* 備考.
+
+Example presentation:
+
+領 収 書
+
+株式会社ABC 御中
+
+¥880,000－
+
+但し、商品代として
+
+上記正に領収いたしました。
+
+Allow compact print layouts in the future.
+
+Primary V1 rendering may remain A4.
+
+⸻
+
+22. TAX ENGINE
+
+Tax calculation must be a dedicated business-logic layer.
+
+Support:
+
+* 10% standard tax;
+* 8% reduced tax;
+* 非課税;
+* 不課税;
+* 免税.
+
+Support configurable rounding:
+
+* 切り捨て;
+* 四捨五入;
+* 切り上げ.
+
+Support:
+
+* 税込;
+* 税抜.
+
+Tax behavior must be deterministic.
+
+Do NOT let document UI components independently calculate taxes.
+
+All tax calculations must be covered by automated tests.
+
+Support mixed tax rates within one document.
+
+⸻
+
+23. DOCUMENT NUMBERING
+
+Each document type receives independent numbering.
+
+Suggested defaults:
+
+見積書:
+QT-2026-0001
+
+納品書:
+DN-2026-0001
+
+請求書:
+INV-2026-0001
+
+領収書:
+RC-2026-0001
+
+発注書:
+PO-2026-0001
+
+注文請書:
+OC-2026-0001
+
+Organization settings should allow configurable patterns.
+
+Example:
+
+INV-{YYYY}-{####}
+
+Number generation must prevent accidental duplicates.
+
+Issued document numbers should not be silently reused.
+
+⸻
+
+24. DOCUMENT LIFECYCLE
+
+Base lifecycle:
+
+DRAFT
+↓
+ISSUED
+↓
+SENT
+
+Invoices additionally support:
+
+PARTIALLY_PAID
+PAID
+
+Potential status:
+
+OVERDUE
+
+should preferably be derived from due date and payment state rather than manually maintained.
+
+⸻
+
+25. DOCUMENT IMMUTABILITY
+
+DRAFT documents may be edited.
+
+Once a document is ISSUED, it must not be silently modified.
+
+Corrections must create a revision.
+
+Example:
+
+INV-2026-0041
+Revision 1
+
+The system must preserve historical versions.
+
+Never overwrite issued historical PDF artifacts.
+
+⸻
+
+26. DOCUMENT RELATIONSHIPS
+
+Maintain relationships between documents.
+
+Example:
+
+QT-2026-0031
+見積書
+↓
+DN-2026-0028
+納品書
+↓
+INV-2026-0028
+請求書
+↓
+RC-2026-0025
+領収書
+
+Display:
+
+関連書類
+
+within document detail views.
+
+⸻
+
+27. DOCUMENT CONVERSION
+
+High-value conversions:
+
+見積書 → 納品書
+
+見積書 → 請求書
+
+請求書 → 領収書 after payment
+
+Conversion must copy relevant business data into the destination document.
+
+Important principle:
+
+Converted documents are snapshots.
+
+They must NOT remain live-linked field-by-field.
+
+Changing the quotation later must never silently change an existing invoice.
+
+Maintain relationship metadata for traceability.
+
+⸻
+
+28. DOCUMENT DUPLICATION
+
+Support:
+
+複製
+
+for all appropriate document types.
+
+Typical use case:
+
+A customer orders the same product repeatedly.
+
+User should be able to:
+
+複製
+→ change date/quantity
+→ save.
+
+Duplicated documents receive new document identity and appropriate numbering.
+
+⸻
+
+29. PAYMENT MANAGEMENT
+
+Payment management must remain lightweight.
+
+For invoices store:
+
+* invoice amount;
+* payment due date;
+* payment transactions;
+* payment date;
+* payment amount;
+* payment method;
+* optional note.
+
+Support partial payments.
+
+Invoice states may become:
+
+UNPAID
+PARTIALLY_PAID
+PAID
+
+Outstanding amount:
+
+invoice total − recorded payments.
+
+⸻
+
+30. SALES MANAGEMENT
+
+Provide a simple 売上管理 area.
+
+Required metrics:
+
+* 売上高;
+* 請求済;
+* 入金済;
+* 未入金;
+* overdue invoices.
+
+Provide:
+
+* monthly sales trend;
+* sales by counterparty.
+
+Do not turn this into financial accounting.
+
+⸻
+
+31. SALES DEFINITION
+
+Astra must explicitly define and document what the application considers:
+
+売上高
+
+before implementation.
+
+Avoid ambiguity between:
+
+* issued invoices;
+* delivery date;
+* invoice date;
+* payment date.
+
+The chosen V1 definition must be simple, internally consistent and visible to users.
+
+Do not attempt to reproduce full accounting revenue-recognition rules.
+
+⸻
+
+32. HOME DASHBOARD
+
+Keep dashboard minimal.
+
+Example:
+
+2026年9月
+
+売上高
+¥5,820,000
+
+請求済
+¥5,320,000
+
+入金済
+¥4,710,000
+
+未入金
+¥610,000
+
+Then:
+
+* small monthly sales chart;
+* recent documents;
+* overdue invoices requiring attention.
+
+Avoid excessive analytics.
+
+⸻
+
+33. INFORMATION ARCHITECTURE
+
+Primary navigation:
+
+ホーム
+
+帳票
+
+* すべて
+* 見積書
+* 納品書
+* 請求書
+* 領収書
+* 発注書
+* 注文請書
+
+売上管理
+
+取引先
+
+商品・サービス
+
+設定
+
+Do not add additional primary navigation domains without strong justification.
+
+⸻
+
+34. DOCUMENT EDITOR UX
+
+Desktop-first layout.
+
+Preferred structure:
+
+LEFT:
+
+structured editor
+
+RIGHT:
+
+live A4 preview
+
+Example:
+
+┌──────────────────────────┬─────────────────────────┐
+│ DOCUMENT EDITOR          │ A4 PREVIEW              │
+│                          │                         │
+│ 取引先                   │       御 見 積 書       │
+│ [ABC株式会社 ▼]         │                         │
+│                          │                         │
+│ 件名                     │                         │
+│ [____________]           │                         │
+│                          │                         │
+│ 明細                     │                         │
+│ + 商品追加               │                         │
+│                          │                         │
+└──────────────────────────┴─────────────────────────┘
+
+Actions:
+
+保存
+PDFプレビュー
+発行
+
+The preview must preserve actual A4 proportions.
+
+Do not create an arbitrary scrollable rectangle that only approximately resembles A4.
+
+⸻
+
+35. MOBILE STRATEGY
+
+Desktop is the primary authoring environment.
+
+Mobile should support:
+
+* document viewing;
+* search;
+* status inspection;
+* basic payment/status actions where appropriate.
+
+Do not spend V1 complexity recreating the complete desktop document editor on mobile.
+
+⸻
+
+36. SEARCH
+
+Users must be able to find documents using:
+
+* 日付;
+* date range;
+* 金額;
+* amount range;
+* 取引先;
+* document type;
+* document number;
+* status.
+
+Search architecture should be compatible with future 電子帳簿保存法 requirements.
+
+Database indexes must be designed accordingly.
+
+⸻
+
+37. 電子帳簿保存法 STRATEGY
+
+V1 architecture must consider 電子帳簿保存法 requirements.
+
+However:
+
+DO NOT claim:
+
+電子帳簿保存法完全対応
+
+unless the implementation has been separately reviewed/audited for compliance.
+
+Preferred internal description:
+
+電子帳簿保存法を考慮した設計
+
+Prepare architecture for:
+
+* searchability;
+* document history;
+* immutable issued artifacts;
+* timestamps;
+* audit records;
+* transaction date;
+* transaction amount;
+* counterparty;
+* document identity.
+
+⸻
+
+38. PDF GENERATION
+
+PDF output is a core product capability.
+
+The final PDF must preserve:
+
+* exact A4 geometry;
+* Japanese typography;
+* whitespace;
+* table alignment;
+* line-item pagination;
+* tax presentation;
+* totals placement;
+* document identity;
+* theme;
+* logo;
+* 印影.
+
+Browser preview and final PDF should originate from the same document design primitives whenever technically practical.
+
+Avoid maintaining unrelated preview and PDF templates.
+
+Astra must investigate the most reliable Cloudflare-compatible rendering strategy before implementation.
+
+Do not assume Node-only PDF libraries automatically work in Cloudflare Workers.
+
+⸻
+
+39. ISSUED PDF STRATEGY
+
+When user performs:
+
+発行
+
+the system should conceptually perform:
+
+structured business data
+↓
+document renderer
+↓
+PDF
+↓
+integrity hash
+↓
+immutable artifact storage
+
+Store at minimum:
+
+* document ID;
+* revision;
+* issued timestamp;
+* PDF object key;
+* integrity hash such as SHA-256.
+
+Issued PDF artifacts must not be overwritten.
+
+⸻
+
+40. SOURCE OF TRUTH
+
+PDF is NOT the primary business-data source.
+
+Structured business data remains the source of truth.
+
+PDF is an issued snapshot/artifact.
+
+This distinction must remain explicit in architecture.
+
+⸻
+
+41. CLOUD INFRASTRUCTURE
+
+Primary platform:
+
+Cloudflare
+
+Preferred components:
+
+Cloudflare Workers
+Cloudflare D1
+Cloudflare R2
+
+Do NOT introduce:
+
+* Supabase;
+* Vercel;
+* Firebase;
+
+unless a genuine technical blocker is demonstrated and approved.
+
+⸻
+
+42. D1 RESPONSIBILITIES
+
+D1 stores structured business data.
+
+Examples:
+
+* organizations;
+* users;
+* counterparties;
+* contacts;
+* products;
+* documents;
+* document items;
+* document relationships;
+* payments;
+* settings;
+* audit records;
+* file metadata.
+
+Use:
+
+* migrations;
+* foreign keys where appropriate;
+* indexes;
+* pagination;
+* efficient SQL.
+
+Avoid unnecessary full-table scans.
+
+⸻
+
+43. R2 RESPONSIBILITIES
+
+R2 stores file artifacts such as:
+
+* issued PDFs;
+* logos;
+* 印影;
+* other document-related binary artifacts.
+
+Define deterministic object-key conventions.
+
+Example concept:
+
+organization/{organization_id}/documents/{year}/{document_id}/revision-{n}.pdf
+
+Do not overwrite historical revisions.
+
+⸻
+
+44. AUTHENTICATION & AUTHORIZATION
+
+This is an internal application.
+
+Astra must evaluate the simplest reliable Cloudflare-compatible authentication strategy.
+
+Avoid unnecessary identity infrastructure.
+
+At minimum distinguish:
+
+ADMIN
+
+and
+
+MEMBER
+
+Possible responsibilities:
+
+ADMIN:
+
+* organization settings;
+* numbering;
+* bank settings;
+* users;
+* document settings.
+
+MEMBER:
+
+* counterparties;
+* products;
+* documents;
+* payments according to approved policy.
+
+Do not create an elaborate enterprise RBAC system in V1.
+
+⸻
+
+45. CORE DATA MODEL
+
+Start from approximately:
+
+organizations
+
+users
+
+counterparties
+
+counterparty_contacts
+
+products
+
+documents
+
+document_items
+
+document_relations
+
+payments
+
+organization_settings
+
+document_files
+
+audit_logs
+
+Prefer a unified documents model.
+
+Do not create separate database architectures for every document type unless there is a demonstrated technical requirement.
+
+⸻
+
+46. DOCUMENT MODEL
+
+A document should conceptually contain:
+
+* id;
+* organization_id;
+* type;
+* document_number;
+* revision;
+* status;
+* counterparty_id;
+* recipient snapshot;
+* issuer snapshot;
+* issue_date;
+* transaction_date where relevant;
+* due_date where relevant;
+* subject;
+* currency;
+* tax mode;
+* subtotal;
+* tax totals;
+* grand total;
+* business conditions;
+* notes;
+* source document relationship;
+* created_at;
+* updated_at;
+* issued_at.
+
+Exact schema must be finalized by Astra.
+
+⸻
+
+47. SNAPSHOT PRINCIPLE
+
+Critical historical information must be snapshot into the document.
+
+Example:
+
+If ABC株式会社 changes its address next year, an invoice issued this year must continue showing the original address.
+
+Therefore do not render historical issued documents solely from current master data.
+
+Relevant master data must be captured as document snapshots.
+
+This applies especially to:
+
+* recipient;
+* issuer;
+* bank details;
+* registration number;
+* line-item descriptions;
+* prices;
+* tax information.
+
+⸻
+
+48. AUDIT HISTORY
+
+Maintain a lightweight audit trail for important events:
+
+* document created;
+* document updated;
+* document issued;
+* document revised;
+* document converted;
+* payment registered;
+* payment modified;
+* PDF generated.
+
+Avoid excessive event sourcing.
+
+A simple reliable audit log is sufficient.
+
+⸻
+
+49. SECURITY
+
+At minimum consider:
+
+* authentication;
+* authorization;
+* tenant/organization isolation;
+* input validation;
+* SQL safety;
+* XSS prevention;
+* secure file access;
+* R2 access control;
+* auditability;
+* secrets management.
+
+Never expose private R2 document artifacts publicly by default.
+
+⸻
+
+50. PERFORMANCE
+
+The application serves a relatively small internal user population.
+
+Optimize for:
+
+* reliability;
+* simplicity;
+* fast common queries;
+* maintainability.
+
+Do not introduce distributed-system complexity unnecessarily.
+
+Use appropriate indexes and pagination.
+
+⸻
+
+51. TESTING REQUIREMENTS
+
+Automated tests must cover at minimum:
+
+Tax
+
+* 10%;
+* 8%;
+* mixed rates;
+* tax-exempt classifications;
+* rounding;
+* 税込;
+* 税抜.
+
+Documents
+
+* numbering;
+* lifecycle;
+* issue locking;
+* revisions;
+* conversion snapshots;
+* relationships;
+* duplication.
+
+Payments
+
+* unpaid;
+* partial payment;
+* full payment;
+* outstanding balance;
+* overdue state.
+
+Sales
+
+* monthly aggregation;
+* counterparty aggregation.
+
+Search
+
+* date;
+* amount;
+* counterparty;
+* document type;
+* document number;
+* status.
+
+Permissions
+
+* admin;
+* member.
+
+⸻
+
+52. DOCUMENT RENDERING TESTS
+
+Rendering regression tests must cover:
+
+* 見積書;
+* 納品書;
+* 請求書;
+* 領収書;
+* 発注書;
+* 注文請書.
+
+Use realistic Japanese fixtures.
+
+Test:
+
+* short company names;
+* long company names;
+* long addresses;
+* many line items;
+* multiple pages;
+* mixed tax rates;
+* large monetary values;
+* logo;
+* 印影;
+* empty optional fields.
+
+Visual review is mandatory.
+
+Passing unit tests alone is not sufficient.
+
+⸻
+
+53. END-TO-END VALIDATION
+
+Before production readiness, execute a realistic workflow:
+
+Create organization settings
+↓
+Create counterparty
+↓
+Create products
+↓
+Create 見積書
+↓
+Preview A4
+↓
+Issue PDF
+↓
+Convert to 納品書
+↓
+Issue 納品書
+↓
+Convert to 請求書
+↓
+Issue invoice
+↓
+Register payment
+↓
+Create 領収書
+
+Separately test:
+
+Supplier
+↓
+発注書
+↓
+注文請書 relationship
+
+Verify:
+
+* calculations;
+* numbering;
+* Japanese typography;
+* document relationships;
+* snapshots;
+* revisions;
+* immutable issued documents;
+* PDF fidelity;
+* search;
+* sales totals;
+* payment state;
+* audit history.
+
+⸻
+
+54. EXPLICIT NON-GOALS
+
+The following are NOT part of V1:
+
+NO CRM.
+
+NO lead management.
+
+NO opportunity management.
+
+NO sales pipeline.
+
+NO ERP.
+
+NO inventory management.
+
+NO warehouse management.
+
+NO manufacturing management.
+
+NO accounting ledger.
+
+NO journal entries.
+
+NO P/L.
+
+NO balance sheet.
+
+NO accounting reconciliation.
+
+NO payroll.
+
+NO HR.
+
+NO attendance management.
+
+NO project management.
+
+NO complex procurement system.
+
+NO supplier-performance platform.
+
+NO public customer portal.
+
+NO public supplier portal.
+
+NO AI features.
+
+NO AI document generation.
+
+NO OCR.
+
+NO drag-and-drop template builder.
+
+NO workflow automation engine.
+
+NO complex enterprise RBAC.
+
+Any proposed feature outside the direct domains of:
+
+帳票
+売上
+入金
+
+must be challenged before inclusion.
+
+⸻
+
+55. PRODUCT DESIGN PRINCIPLE
+
+The product should feel simpler than a typical Japanese ERP or accounting application.
+
+The user should think:
+
+「帳票を作るための道具」
+
+not:
+
+「業務システムを操作している」
+
+Reduce unnecessary screens, settings and concepts.
+
+Prefer sensible defaults.
+
+⸻
+
+56. DOCUMENT QUALITY PRINCIPLE
+
+The quality of exported documents is as important as the quality of the web interface.
+
+Users ultimately send these documents to customers, suppliers and business partners.
+
+Therefore:
+
+PDF quality is a first-class product requirement.
+
+The system must produce documents that employees are comfortable sending to professional Japanese counterparties without manually editing the PDF afterward.
+
+⸻
+
+57. IMPLEMENTATION PHILOSOPHY
+
+Prefer:
+
+simple architecture
+over speculative abstraction.
+
+Prefer:
+
+explicit business logic
+over clever generic engines.
+
+Prefer:
+
+one shared document system
+over six duplicated implementations.
+
+Prefer:
+
+tested calculations
+over UI-side assumptions.
+
+Prefer:
+
+immutable issued history
+over convenient destructive editing.
+
+Prefer:
+
+small V1
+over future-oriented ERP architecture.
+
+⸻
+
+58. REQUIRED ASTRA PLANNING OUTPUT
+
+Astra is responsible for turning this PRD into an implementation-ready plan.
+
+Before any coding begins, Astra must produce:
+
+1. Repository/environment assessment.
+2. Architecture recommendation.
+3. Technology choices.
+4. Cloudflare deployment architecture.
+5. Authentication strategy.
+6. Application module structure.
+7. Route structure.
+8. D1 database schema.
+9. Entity relationships.
+10. Index strategy.
+11. Migration strategy.
+12. R2 storage architecture.
+13. Document snapshot strategy.
+14. Document lifecycle/state machine.
+15. Revision strategy.
+16. Document relationship model.
+17. Document conversion rules.
+18. Document numbering strategy.
+19. Tax calculation specification.
+20. Payment calculation specification.
+21. Sales calculation definition.
+22. Japanese Business Document Design System implementation specification.
+23. Exact field specification for all six documents.
+24. PDF rendering architecture.
+25. Multi-page document strategy.
+26. Search architecture.
+27. Audit-log strategy.
+28. Security model.
+29. Authorization model.
+30. Testing architecture.
+31. Rendering regression strategy.
+32. Implementation phases.
+33. Dependencies between phases.
+34. Acceptance criteria for every phase.
+35. Production validation plan.
+36. Risks.
+37. Unresolved decisions.
+38. Explicit assumptions.
+
+Astra must identify contradictions, missing requirements or technical risks before implementation.
+
+Do not silently invent product requirements.
+
+⸻
+
+59. ASTRA ROLE
+
+Astra acts as:
+
+Lead Software Architect
++
+Implementation Planner
+
+Astra should NOT implement the application during the planning phase.
+
+Astra should inspect the repository/environment before finalizing technical decisions.
+
+The plan must be detailed enough for another coding agent to execute reliably.
+
+Astra owns the question:
+
+HOW SHOULD THIS PRODUCT BE BUILT?
+
+⸻
+
+60. LUNA ROLE
+
+After the Astra implementation plan is reviewed and approved, Luna becomes the implementation engineer.
+
+Luna must follow:
+
+1. this PRD;
+2. the approved Astra implementation plan.
+
+Luna must not independently redesign product architecture or expand product scope.
+
+Luna owns the question:
+
+HOW DO I IMPLEMENT THE APPROVED PLAN CORRECTLY?
+
+⸻
+
+61. IMPLEMENTATION CONTROL
+
+Implementation should proceed phase-by-phase.
+
+At the end of every phase:
+
+1. Run relevant automated tests.
+2. Run regression tests.
+3. Verify migrations.
+4. Verify build.
+5. Verify Cloudflare runtime compatibility.
+6. Review UI against the design specification.
+7. Review document rendering.
+8. Record known deviations.
+9. Create a coherent version-control checkpoint.
+
+Do not continue accumulating unresolved architectural debt across phases.
+
+⸻
+
+62. CHANGE CONTROL
+
+If implementation reality conflicts with the approved Astra plan:
+
+Do NOT silently redesign the system.
+
+Instead:
+
+1. identify the conflict;
+2. explain the technical cause;
+3. evaluate impact;
+4. propose the smallest correction;
+5. update the plan if approved;
+6. then implement.
+
+The PRD remains the product authority.
+
+⸻
+
+63. V1 DEFINITION OF DONE
+
+V1 is complete when an internal employee can reliably:
+
+* manage organization information;
+* manage counterparties;
+* manage products/services;
+* create all six supported document types;
+* generate professional Japanese A4 documents;
+* issue immutable PDF snapshots;
+* duplicate documents;
+* convert related documents;
+* find historical documents;
+* register invoice payments;
+* identify unpaid and overdue invoices;
+* view basic monthly sales;
+* view sales by counterparty;
+* view related documents;
+* preserve issued history;
+* operate the system through a simple Japanese interface.
+
+And when the system passes:
+
+* automated business-logic tests;
+* document-rendering regression tests;
+* realistic Japanese business fixtures;
+* complete end-to-end validation;
+* Cloudflare deployment validation.
+
+⸻
+
+64. FINAL PRODUCT BOUNDARY
+
+The product should solve this problem extremely well:
+
+「日本企業の日常業務で必要な帳票を、速く、正確に、美しく、統一された形式で作成・管理し、請求・入金・売上をシンプルに把握する。」
+
+It should deliberately NOT attempt to solve every company-management problem.
+
+The success of this product depends as much on what it refuses to become as on the features it implements.
