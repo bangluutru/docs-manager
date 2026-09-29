@@ -26,6 +26,6 @@ pnpm build
 
 ## Phạm vi hiện tại
 
-Luồng tạo và phát hành bán hàng, lịch sử PDF, thanh toán/điều chỉnh, biên nhận, báo cáo và tìm kiếm hoạt động trong môi trường local. PO và 注文請書 hiện chỉ cho phép lưu bản nháp và xem trước; phát hành bị khóa cho tới khi chốt quyết định D08 trong `docs/IMPLEMENTATION_PLAN.md`.
+Luồng tạo và phát hành bán hàng, lịch sử PDF, thanh toán/điều chỉnh, biên nhận, báo cáo và tìm kiếm hoạt động trong môi trường local. 発注書 (PO) được phát hành từ công ty tới nhà cung cấp; 注文請書 (OC) được phát hành từ công ty tới khách hàng để xác nhận đã nhận đơn. Cả hai dùng luồng đánh số, PDF và lưu trữ chung, đồng thời kiểm tra đúng vai trò đối tác.
 
 Cloudflare Access, tài nguyên D1/R2/Browser Run thật, miền triển khai, sao lưu và quy trình khôi phục chưa được cấu hình. Không chạy lệnh `--remote` hoặc deploy cho tới khi hoàn thành các cổng vận hành trong kế hoạch.

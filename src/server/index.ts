@@ -530,7 +530,6 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
   const actor=c.get("actor");const docId=c.req.param("id");
   let record=await revisionFor(c,docId);
   if(!record)return errorResponse("NOT_FOUND","帳票が見つかりません。",404);
-  if(record.row.type==="OC")return errorResponse("PURCHASE_POLICY_PENDING","注文請書の発行は業務方針（D08）が確定するまで利用できません。",409);
   if(record.row.revision>0&&actor.role!=="ADMIN")return errorResponse("FORBIDDEN","改訂書類の発行は管理者のみ実行できます。",403);
   const key=idempotencyKey(c);if(!key)return errorResponse("IDEMPOTENCY_KEY_REQUIRED","リクエストキーを指定してください。",422);
   const operation=`issue:${docId}:${record.row.id}`;const requestHash=await requestFingerprint({documentId:docId,revisionId:record.row.id});
@@ -579,11 +578,13 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
         return errorResponse("RECEIPT_SNAPSHOT_MISMATCH","領収書の金額・宛名・税額・入金情報が請求書と一致しません。請求書から作成し直してください。",409);
       }
     }
-    const expectedCounterpartyRole=record.row.type==="PO"?"supplier":null;
+    if(record.row.type==="OC"&&!data.acceptedDate)return errorResponse("ISSUE_VALIDATION","受注日を入力してください。",422);
+    const expectedCounterpartyRole=record.row.type==="PO"?"supplier":record.row.type==="OC"?"customer":null;
     if(expectedCounterpartyRole&&record.row.counterparty_id){
       const partner=await c.env.DB.prepare("SELECT is_customer,is_supplier FROM counterparties WHERE organization_id=? AND id=? AND active=1")
         .bind(actor.organizationId,record.row.counterparty_id).first<{is_customer:number;is_supplier:number}>();
-      if(!partner||!partner.is_supplier)return errorResponse("COUNTERPARTY_ROLE_MISMATCH","発注書の宛先は仕入先として登録された取引先を選択してください。",422);
+      const hasRequiredRole=expectedCounterpartyRole==="supplier"?partner?.is_supplier:partner?.is_customer;
+      if(!partner||!hasRequiredRole)return errorResponse("COUNTERPARTY_ROLE_MISMATCH",expectedCounterpartyRole==="supplier"?"発注書の宛先は仕入先として登録された取引先を選択してください。":"注文請書の宛先はお客様として登録された取引先を選択してください。",422);
     }
     const settings=await c.env.DB.prepare("SELECT qualified_mode,registration_number FROM organization_settings WHERE organization_id=?").bind(actor.organizationId).first<{qualified_mode:number;registration_number:string|null}>();
     if(record.row.type==="INV"){
