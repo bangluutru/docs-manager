@@ -25,6 +25,37 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!response.ok) throw new Error(body.error?.message ?? "通信に失敗しました。もう一度お試しください。");
   return body.data as T;
 }
+const pendingMutationKeys = new Map<string, { fingerprint: string; key: string }>();
+async function requestIdempotently<T>(operation: string, path: string, body: unknown): Promise<T> {
+  const serialized = JSON.stringify(body);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized));
+  const fingerprint = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const storageKey = `jds:idempotency:${operation}:${fingerprint}`;
+  let pending = pendingMutationKeys.get(storageKey);
+  try {
+    const stored = sessionStorage.getItem(storageKey);
+    if (stored) {
+      const parsed = JSON.parse(stored) as { fingerprint?: string; key?: string };
+      if (parsed.fingerprint === fingerprint && parsed.key) pending = { fingerprint, key: parsed.key };
+    }
+  } catch { /* Keep the in-memory retry key when session storage is unavailable. */ }
+  if (!pending || pending.fingerprint !== fingerprint) pending = { fingerprint, key: crypto.randomUUID() };
+  pendingMutationKeys.set(storageKey, pending);
+  try { sessionStorage.setItem(storageKey, JSON.stringify(pending)); } catch { /* Memory still covers retries in this page. */ }
+  try {
+    const result = await request<T>(path, { method: "POST", body: serialized, headers: { "Idempotency-Key": pending.key } });
+    if (pendingMutationKeys.get(storageKey)?.key === pending.key) pendingMutationKeys.delete(storageKey);
+    try {
+      const stored = sessionStorage.getItem(storageKey);
+      if (stored && (JSON.parse(stored) as { key?: string }).key === pending.key) sessionStorage.removeItem(storageKey);
+    } catch { /* The successful response is authoritative even if storage cleanup fails. */ }
+    return result;
+  } catch (error) {
+    // A network failure may have happened after the server committed. Retain
+    // this key so an identical retry replays that committed mutation.
+    throw error;
+  }
+}
 export const api = {
   getOrganization: () => request<Organization>("/api/v1/organization"),
   session: () => request<{actor:{role:"ADMIN"|"MEMBER";name:string;email:string}}>("/api/v1/session"),
@@ -46,16 +77,16 @@ export const api = {
   salesByCounterparty: (month:string) => request<Array<{counterparty_name:string;invoice_count:number;sales_yen:number;invoiced_yen:number}>>(`/api/v1/sales/counterparties?month=${month}`),
   overdueInvoices: () => request<Array<{id:string;number:string;subject:string;recipient_search_name:string;due_date:string;total_yen:number;outstanding_yen:number}>>("/api/v1/sales/overdue"),
   payments: (id:string) => request<PaymentSummary>(`/api/v1/documents/${encodeURIComponent(id)}/payments`),
-  registerPayment: (id:string,data:{paymentDate:string;amountYen:number;method:string;note:string;confirmPrepayment?:boolean}) => request<object>(`/api/v1/documents/${encodeURIComponent(id)}/payments`,{method:"POST",body:JSON.stringify(data),headers:{"Idempotency-Key":crypto.randomUUID()}}),
-  duplicateDocument: (id:string) => request<{id:string}>(`/api/v1/documents/${encodeURIComponent(id)}/duplicate`,{method:"POST",body:"{}",headers:{"Idempotency-Key":crypto.randomUUID()}}),
-  convertDocument: (id:string,type:"DN"|"INV"|"RC") => request<{id:string}>(`/api/v1/documents/${encodeURIComponent(id)}/convert`,{method:"POST",body:JSON.stringify({type}),headers:{"Idempotency-Key":crypto.randomUUID()}}),
-  reviseDocument: (id:string,reason:string) => request<{id:string;revision:number}>(`/api/v1/documents/${encodeURIComponent(id)}/revise`,{method:"POST",body:JSON.stringify({reason}),headers:{"Idempotency-Key":crypto.randomUUID()}}),
+  registerPayment: (id:string,data:{paymentDate:string;amountYen:number;method:string;note:string;confirmPrepayment?:boolean}) => requestIdempotently<object>(`payment:${id}`,`/api/v1/documents/${encodeURIComponent(id)}/payments`,data),
+  duplicateDocument: (id:string) => requestIdempotently<{id:string}>(`duplicate:${id}`,`/api/v1/documents/${encodeURIComponent(id)}/duplicate`,{}),
+  convertDocument: (id:string,type:"DN"|"INV"|"RC") => requestIdempotently<{id:string}>(`convert:${id}`,`/api/v1/documents/${encodeURIComponent(id)}/convert`,{type}),
+  reviseDocument: (id:string,reason:string) => requestIdempotently<{id:string;revision:number}>(`revise:${id}`,`/api/v1/documents/${encodeURIComponent(id)}/revise`,{reason}),
   markSent: (id:string) => request<{sent:boolean}>(`/api/v1/documents/${encodeURIComponent(id)}/mark-sent`,{method:"POST",body:"{}"}),
   relatedDocuments: (id:string) => request<Array<{kind:string;created_at:string;related_document_id:string;related_revision_id:string;type:string;number:string|null;subject:string;issue_date:string}>>(`/api/v1/documents/${encodeURIComponent(id)}/relations`),
   revisions: (id:string) => request<RevisionSummary[]>(`/api/v1/documents/${encodeURIComponent(id)}/revisions`),
-  correctPayment: (id:string,data:{reason:string;replacement:{paymentDate:string;amountYen:number;method:string;note:string}}) => request<object>(`/api/v1/payments/${encodeURIComponent(id)}/corrections`,{method:"POST",body:JSON.stringify(data),headers:{"Idempotency-Key":crypto.randomUUID()}}),
-  issue: (id:string) => request<{issued:boolean;number:string;pdfUrl:string;sha256:string}>(`/api/v1/documents/${encodeURIComponent(id)}/issue`,{method:"POST",body:"{}",headers:{"Idempotency-Key":crypto.randomUUID()}}),
-  counterparties: (query = "") => request<Array<{id:string;name:string;kana:string;is_customer:number;is_supplier:number;postal_code:string;prefecture:string;address:string;building:string;phone:string}>>(`/api/v1/counterparties?q=${encodeURIComponent(query)}`),
+  correctPayment: (id:string,data:{reason:string;replacement:{paymentDate:string;amountYen:number;method:string;note:string}}) => requestIdempotently<object>(`payment-correction:${id}`,`/api/v1/payments/${encodeURIComponent(id)}/corrections`,data),
+  issue: (id:string) => requestIdempotently<{issued:boolean;number:string;pdfUrl:string;sha256:string}>(`issue:${id}`,`/api/v1/documents/${encodeURIComponent(id)}/issue`,{}),
+  counterparties: (query = "", role:"customer"|"supplier"|"all"="customer") => request<Array<{id:string;name:string;kana:string;is_customer:number;is_supplier:number;postal_code:string;prefecture:string;address:string;building:string;phone:string}>>(`/api/v1/counterparties?q=${encodeURIComponent(query)}&role=${role}`),
   addCounterparty: (data: object) => request<{id:string}>("/api/v1/counterparties",{method:"POST",body:JSON.stringify(data)}),
   products: (query = "") => request<Array<{id:string;code:string;name:string;description:string;unit:string;unit_price_decimal:string;tax_class:string}>>(`/api/v1/products?q=${encodeURIComponent(query)}`),
   addProduct: (data: object) => request<{id:string}>("/api/v1/products",{method:"POST",body:JSON.stringify(data)}),

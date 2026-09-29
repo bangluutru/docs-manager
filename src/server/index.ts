@@ -143,8 +143,10 @@ app.patch("/api/v1/organization", async (c) => {
 app.get("/api/v1/counterparties", async (c) => {
   const orgId = c.get("actor").organizationId;
   const query = (c.req.query("q") ?? "").trim().slice(0, 100);
-  const role = c.req.query("role") === "supplier" ? "is_supplier" : "is_customer";
-  const rows = await c.env.DB.prepare(`SELECT id,name,kana,is_customer,is_supplier,postal_code,prefecture,address,building,phone,email,notes,active FROM counterparties WHERE organization_id=? AND active=1 AND ${role}=1 AND (?='' OR normalized_name LIKE ? ESCAPE '\\') ORDER BY normalized_name,id LIMIT 100`)
+  const role = c.req.query("role") ?? "customer";
+  if (!(["customer", "supplier", "all"] as const).includes(role as "customer" | "supplier" | "all")) return errorResponse("VALIDATION_ERROR", "取引先区分を確認してください。", 422);
+  const roleFilter = role === "all" ? "1=1" : `${role === "supplier" ? "is_supplier" : "is_customer"}=1`;
+  const rows = await c.env.DB.prepare(`SELECT id,name,kana,is_customer,is_supplier,postal_code,prefecture,address,building,phone,email,notes,active FROM counterparties WHERE organization_id=? AND active=1 AND ${roleFilter} AND (?='' OR normalized_name LIKE ? ESCAPE '\\') ORDER BY normalized_name,id LIMIT 100`)
     .bind(orgId,query,`%${query.replace(/[\\%_]/g,"\\$&").toLowerCase()}%`).all();
   return c.json({ data: rows.results });
 });
@@ -183,7 +185,7 @@ app.post("/api/v1/products", async (c) => {
 const RevisionRowSchema = z.object({
   id: z.string(), document_id: z.string(), type: z.enum(DOCUMENT_TYPES), revision: z.number(), state: z.string(),
   number: z.string().nullable(), version: z.number(), recipient_snapshot_json: z.string(), issuer_snapshot_json: z.string(),
-  type_fields_json: z.string(), render_settings_json: z.string(), bank_snapshot_json: z.string(),
+  type_fields_json: z.string(), tax_summary_json: z.string(), render_settings_json: z.string(), bank_snapshot_json: z.string(),
   sent_at: z.string().nullable().optional(),
   counterparty_id: z.string().nullable(),
   issue_date: z.string(), transaction_date: z.string().nullable(), period_start: z.string().nullable(), period_end: z.string().nullable(),
@@ -293,7 +295,9 @@ async function makePdf(env:Env,html:string):Promise<Uint8Array>{
     await page.evaluate(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(image=>image.decode().catch(()=>undefined)))});
     const pages=await page.evaluate(()=>Math.max(1,Math.ceil(document.documentElement.scrollHeight/(297*96/25.4))));
     if(pages>40)throw new Error("PDF_PAGE_LIMIT");
-    return Uint8Array.from(await page.pdf({format:"A4",printBackground:true,preferCSSPageSize:true}));
+    const pdf=Uint8Array.from(await page.pdf({format:"A4",printBackground:true,preferCSSPageSize:true}));
+    await page.close();
+    return pdf;
   }finally{await browser.close();}
 }
 
@@ -425,7 +429,7 @@ app.post("/api/v1/documents/:id/convert",async(c)=>{
     relation={sourceRevisionId:source.row.id,targetDocumentId:"$new",kind:"RECEIPT_FOR"};
   }
   try{
-    const response=await insertDraft(c,data,{relation,action:"DOCUMENT_CONVERTED",idempotency:{operation,key,requestHash:hash}});
+    const response=await insertDraft(c,data,{snapshot:source.row,relation,action:"DOCUMENT_CONVERTED",idempotency:{operation,key,requestHash:hash}});
     return c.json({data:response},201);
   }catch(error){const race=await replayIdempotency(c,operation,key,hash);if(race)return race;const message=String(error);return errorResponse("CONVERSION_CONFLICT",message.includes("fully paid")?"請求書の入金状態が変わりました。":"変換先を作成できませんでした。",409);}
 });
@@ -508,7 +512,15 @@ app.patch("/api/v1/documents/:id", async (c) => {
   statements.push(c.env.DB.prepare(`INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json)
     SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM document_revisions WHERE id=? AND organization_id=? AND version=?)`)
     .bind(id(),actor.organizationId,actor.id,"DOCUMENT_DRAFT_UPDATED","DOCUMENT",docId,revisionId,timestamp,c.get("requestId"),JSON.stringify({version:nextVersion}),revisionId,actor.organizationId,nextVersion));
-  const results = await c.env.DB.batch(statements);
+  statements.splice(1,0,c.env.DB.prepare(`INSERT INTO write_guard_failures(reason)
+    SELECT 'stale draft version' WHERE changes()<>1`));
+  let results: Awaited<ReturnType<typeof c.env.DB.batch>>;
+  try {
+    results=await c.env.DB.batch(statements);
+  } catch(error) {
+    if(String(error).includes("stale draft version"))return errorResponse("VERSION_CONFLICT","別の変更が保存されています。最新の内容を読み込み直してください。",409);
+    return errorResponse("SAVE_FAILED","保存できませんでした。",409);
+  }
   if (!results[0].success) return errorResponse("SAVE_FAILED", "保存できませんでした。", 409);
   if ((results[0].meta.changes ?? 0) !== 1) return errorResponse("VERSION_CONFLICT", "別の変更が保存されています。最新の内容を読み込み直してください。", 409);
   return c.json({ data: { saved:true,version:nextVersion,totalYen:tax.totalYen } });
@@ -518,6 +530,7 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
   const actor=c.get("actor");const docId=c.req.param("id");
   let record=await revisionFor(c,docId);
   if(!record)return errorResponse("NOT_FOUND","帳票が見つかりません。",404);
+  if(record.row.type==="OC")return errorResponse("PURCHASE_POLICY_PENDING","注文請書の発行は業務方針（D08）が確定するまで利用できません。",409);
   if(record.row.revision>0&&actor.role!=="ADMIN")return errorResponse("FORBIDDEN","改訂書類の発行は管理者のみ実行できます。",403);
   const key=idempotencyKey(c);if(!key)return errorResponse("IDEMPOTENCY_KEY_REQUIRED","リクエストキーを指定してください。",422);
   const operation=`issue:${docId}:${record.row.id}`;const requestHash=await requestFingerprint({documentId:docId,revisionId:record.row.id});
@@ -532,7 +545,6 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
       WHERE idempotency_requests.request_hash=excluded.request_hash`).bind(actor.organizationId,actor.id,operation,key,requestHash,docId,JSON.stringify(response),"COMPLETED",timestamp).run();
     return c.json({data:response});
   }
-  if(record.row.state==="DRAFT"&&(record.row.type==="PO"||record.row.type==="OC"))return errorResponse("PURCHASE_POLICY_PENDING","仕入れ書類の発行は、運用方針の確認後に有効になります。下書きは保存できます。",409);
   let job=await c.env.DB.prepare("SELECT id,state,snapshot_hash,object_key,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(actor.organizationId,record.row.id).first<{id:string;state:string;snapshot_hash:string;object_key:string;attempt_count:number;lease_expires_at:string|null}>();
   if(record.row.state!=="DRAFT"&&record.row.state!=="ISSUING")return errorResponse("DOCUMENT_LOCKED","この帳票は発行できません。",409);
   if(record.row.state==="DRAFT"){
@@ -544,7 +556,35 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
     if(record.row.type==="DN"&&!data.deliveryDate)return errorResponse("ISSUE_VALIDATION","納品日を入力してください。",422);
     if(record.row.type==="INV"&&!record.row.due_date)return errorResponse("ISSUE_VALIDATION","請求書の支払期限を入力してください。",422);
     if(record.row.type==="RC"&&!data.purpose.trim())return errorResponse("ISSUE_VALIDATION","領収書の但し書きを入力してください。",422);
-    if(record.row.type==="OC"&&!data.acceptedDate)return errorResponse("ISSUE_VALIDATION","受注日を入力してください。",422);
+    if(record.row.type==="RC"){
+      const receiptLink=await c.env.DB.prepare("SELECT 1 FROM document_relations WHERE organization_id=? AND target_document_id=? AND kind='RECEIPT_FOR' LIMIT 1")
+        .bind(actor.organizationId,docId).first();
+      if(receiptLink){
+      const claim=await c.env.DB.prepare(`SELECT invoice.total_yen,invoice.tax_summary_json,invoice.recipient_snapshot_json,
+        COALESCE((SELECT SUM(p.amount_yen) FROM payments p WHERE p.organization_id=invoice.organization_id AND p.invoice_document_id=invoice_document.id AND p.voided_at IS NULL),0) paid_yen,
+        (SELECT MAX(p.payment_date) FROM payments p WHERE p.organization_id=invoice.organization_id AND p.invoice_document_id=invoice_document.id AND p.voided_at IS NULL) latest_payment_date,
+        CASE WHEN (SELECT COUNT(DISTINCT p.method) FROM payments p WHERE p.organization_id=invoice.organization_id AND p.invoice_document_id=invoice_document.id AND p.voided_at IS NULL)=1
+          THEN (SELECT MIN(p.method) FROM payments p WHERE p.organization_id=invoice.organization_id AND p.invoice_document_id=invoice_document.id AND p.voided_at IS NULL)
+          ELSE 'OTHER' END payment_method
+        FROM document_relations rel
+        JOIN document_revisions invoice ON invoice.organization_id=rel.organization_id AND invoice.id=rel.source_revision_id AND invoice.state='ISSUED'
+        JOIN documents invoice_document ON invoice_document.organization_id=invoice.organization_id AND invoice_document.id=invoice.document_id
+          AND invoice_document.type='INV' AND invoice_document.current_issued_revision_id=invoice.id
+        WHERE rel.organization_id=? AND rel.target_document_id=? AND rel.kind='RECEIPT_FOR' LIMIT 1`)
+        .bind(actor.organizationId,docId).first<{total_yen:number;tax_summary_json:string;recipient_snapshot_json:string;paid_yen:number;latest_payment_date:string|null;payment_method:string}>();
+      const typeFields=JSON.parse(record.row.type_fields_json||"{}") as {paymentMethod?:string};
+      if(!claim||claim.total_yen<=0||claim.paid_yen!==claim.total_yen||record.row.total_yen!==claim.total_yen||
+        record.row.tax_summary_json!==claim.tax_summary_json||record.row.recipient_snapshot_json!==claim.recipient_snapshot_json||
+        record.row.issue_date!==claim.latest_payment_date||typeFields.paymentMethod!==claim.payment_method)
+        return errorResponse("RECEIPT_SNAPSHOT_MISMATCH","領収書の金額・宛名・税額・入金情報が請求書と一致しません。請求書から作成し直してください。",409);
+      }
+    }
+    const expectedCounterpartyRole=record.row.type==="PO"?"supplier":null;
+    if(expectedCounterpartyRole&&record.row.counterparty_id){
+      const partner=await c.env.DB.prepare("SELECT is_customer,is_supplier FROM counterparties WHERE organization_id=? AND id=? AND active=1")
+        .bind(actor.organizationId,record.row.counterparty_id).first<{is_customer:number;is_supplier:number}>();
+      if(!partner||!partner.is_supplier)return errorResponse("COUNTERPARTY_ROLE_MISMATCH","発注書の宛先は仕入先として登録された取引先を選択してください。",422);
+    }
     const settings=await c.env.DB.prepare("SELECT qualified_mode,registration_number FROM organization_settings WHERE organization_id=?").bind(actor.organizationId).first<{qualified_mode:number;registration_number:string|null}>();
     if(record.row.type==="INV"){
       const hasAnyPeriod=!!data.periodStart||!!data.periodEnd;const hasFullPeriod=!!data.periodStart&&!!data.periodEnd;
