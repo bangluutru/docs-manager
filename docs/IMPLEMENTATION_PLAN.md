@@ -1,17 +1,23 @@
 # Japanese Business Document & Sales Management — implementation plan
 
-Date: 2026-09-29 · Planning baseline v1 · Status: **Proposed; awaiting review**
+Date: 2026-09-29 · Planning baseline v1 · Status: **Approved for implementation by user on 2026-09-29**
 
-Authority: `PRODUCT_REQUIREMENTS.txt`, PRD v1.0. This plan specifies how to build that product. It does not authorize implementation or claim compliance. No application code, infrastructure, migrations, or deployments were created during planning. Luna begins only after plan approval, as required by PRD §§59–62.
+Authority: `PRODUCT_REQUIREMENTS.txt`, PRD v1.0. This plan specifies how to build that product. User approved implementation against this plan. Approval accepts the proposed baseline decisions except items explicitly gated below; it does not claim statutory compliance. Phase 0 establishes verified runtime constraints before enabled production deployment.
 
 ## 1. Repository and environment assessment
 
 - Workspace: `/Users/tranhaibang/.gemini/antigravity-ide/scratch/docs-manager`. Initially empty, including hidden files. No application, package manifest, lockfile, tests, CI, database, or Cloudflare configuration exists.
-- Git resolves to the ancestor `/Users/tranhaibang/.gemini/antigravity-ide`, branch `main`, tracking `origin/main`. That ancestor has many unrelated existing changes. Do not stage, clean, reset, or commit the ancestor wholesale. The ancestor `.gitignore` excludes `scratch/`, so these planning files are saved locally but not tracked. Decide whether to use a dedicated repository before phase 1; until then scope every Git operation to this project. No commit was created.
+- At the planning baseline Git resolved to the ancestor `/Users/tranhaibang/.gemini/antigravity-ide`, branch `main`, tracking `origin/main`. That ancestor has many unrelated existing changes. Do not stage, clean, reset, or commit the ancestor wholesale. The implementation initialized a project-scoped `.git` here; its first commit captured the proposed planning baseline, and the later implementation commit records the user's approval and execution status. Keep all Git operations scoped to this project.
 - macOS; Node v24.12.0, npm 11.6.2, pnpm available. No global Wrangler found. Install a project-local Wrangler only during approved implementation.
 - No applicable AGENTS.md found in the workspace or checked ancestor chain through `/Users`. No existing conventions to inherit.
 - Cloudflare account, permissions, domain, Access identity provider, Browser Run entitlement, budget, existing backups, and production data have not been inspected or verified. No credentials were requested or read.
 - Consequence: greenfield architecture. Actual cloud compatibility, fonts, latency, and account limits require the phase-0 spike; documentation research is not a runtime test.
+
+## Current implementation status — 2026-09-30
+
+The local V1 application has a working React/Vite interface and Hono Worker backed by local D1, with organization-scoped auth context, six document types, Japanese A4 preview/PDF issuance, snapshot revisions and numbering, master data, invoice payments/corrections, receipts, sales summaries, search filters, and audit history. Invoice transaction date/period and issue idempotency are implemented. Evidence on 2026-09-30: `pnpm typecheck`, nine `pnpm test` domain/rendering cases, and `pnpm build` pass; Wrangler reports no pending local migrations and `d1_migrations` contains 0001–0003; local API smoke confirmed transaction-date persistence, same-key issue retry returning the same number, and PO issue rejected with `PURCHASE_POLICY_PENDING` (409). Browser review confirmed the Japanese A4 draft and D08 explanation render and the issue action is absent. The local demo auth path is restricted to development on localhost. PO/OC drafts and previews are available, while API issuance is held behind unresolved D08 policy.
+
+This is implementation progress, not release acceptance or production readiness. Cloudflare account/runtime and Browser Run rendering, load/cap and recovery fault-injection gates, integration/concurrency coverage, formal D1 integrity checks, actual print review, organization/tax-owner decisions, D08 purchase semantics, D11 cancellation/refund/retention policy, and D12 identity/domain/backup/cost ownership remain unverified. The local D1 CLI rejects `PRAGMA integrity_check` with `SQLITE_AUTH`, so this check still needs a supported verification path. No production migration or deployment has been run. The implementation phases below remain open until their acceptance gates are evidenced.
 
 ## 2. Decisions, assumptions, and approval gates
 
