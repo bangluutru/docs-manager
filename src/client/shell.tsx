@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type DocumentFilters, type DocumentSummary, type Organization } from "./api";
+import { api, type DocumentFilters, type DocumentSummary, type Organization, type SessionActor } from "./api";
+import { Guide } from "./views/Guide";
 import { DocumentEditor } from "./views/DocumentEditor";
 import { Documents } from "./views/Documents";
 import { Home } from "./views/Home";
@@ -14,6 +15,7 @@ const types = ["QT","DN","INV","RC","PO","OC"];
 export function App() {
   const [path,setPath] = useState(window.location.pathname + window.location.search);
   const [org,setOrg] = useState<Organization | null>(null);
+  const [actor,setActor] = useState<SessionActor | null>(null);
   const [docs,setDocs] = useState<DocumentSummary[]>([]);
   const [nextCursor,setNextCursor]=useState<string|null>(null);const [loadingMore,setLoadingMore]=useState(false);const listGeneration=useRef(0);
   const [query,setQuery] = useState("");
@@ -28,6 +30,7 @@ export function App() {
     window.addEventListener("popstate",onPop); return ()=>window.removeEventListener("popstate",onPop);
   },[]);
   useEffect(()=>{ api.getOrganization().then(setOrg).catch((e)=>setError(e.message)); },[refresh]);
+  useEffect(()=>{ api.session().then(result=>setActor(result.actor)).catch(()=>setActor(null)); },[]);
   useEffect(()=>{
     const generation=++listGeneration.current;setNextCursor(null);setLoadingMore(false);
     api.documentsPage(query,selectedType,filters).then(page=>{if(generation===listGeneration.current){setDocs(page.data);setNextCursor(page.nextCursor)}}).catch(e=>{if(generation===listGeneration.current){setDocs([]);setError(e.message)}});
@@ -39,13 +42,14 @@ export function App() {
   }
   function navigate(to:string){window.history.pushState({},"",to);setPath(to);setError("");setNotice("");window.scrollTo(0,0);}
   function flash(message:string){setNotice(message);window.setTimeout(()=>setNotice(""),3500);}
-  const view = currentPath==="/" ? <Home organization={org} documents={docs} navigate={navigate} />
+  const view = currentPath==="/" ? <Home organization={org} documents={docs} navigate={navigate} admin={actor?.role==="ADMIN"} />
     : currentPath==="/documents/new" || /^\/documents\/[^/]+\/edit$/.test(currentPath) ? <DocumentEditor key={path} path={currentPath} organization={org} navigate={navigate} flash={flash} />
     : currentPath==="/documents" ? <Documents documents={docs} selectedType={selectedType} query={query} setQuery={setQuery} filters={filters} setFilter={(key,value)=>setFilters(old=>({...old,[key]:value}))} navigate={navigate} hasMore={!!nextCursor} loadingMore={loadingMore} loadMore={()=>void loadMoreDocuments()} />
     : currentPath==="/sales" ? <Sales />
     : currentPath==="/counterparties" ? <Masters kind="counterparties" />
     : currentPath==="/products" ? <Masters kind="products" />
-    : currentPath.startsWith("/settings") ? <Settings organization={org} saved={()=>{setRefresh((n)=>n+1);flash("会社情報を保存しました。")}} />
+    : currentPath.startsWith("/settings") ? <Settings organization={org} actor={actor} path={currentPath} navigate={navigate} saved={(message)=>{setRefresh((n)=>n+1);flash(message)}} />
+    : currentPath==="/guide" ? <Guide navigate={navigate} />
     : <Documents documents={docs} selectedType="" query={query} setQuery={setQuery} filters={filters} setFilter={(key,value)=>setFilters(old=>({...old,[key]:value}))} navigate={navigate} hasMore={!!nextCursor} loadingMore={loadingMore} loadMore={()=>void loadMoreDocuments()} />;
   return <div className="app-shell">
     <aside className="sidebar">
@@ -53,11 +57,11 @@ export function App() {
       <div className="nav-caption">メニュー</div>
       <nav>{primary.map((item)=><button key={item.path} className={`nav-link ${currentPath===item.path || (item.path==="/documents"&&currentPath.startsWith("/documents"))?"active":""}`} onClick={()=>navigate(item.path)}><span className="nav-icon">{item.icon}</span>{item.label}{item.path==="/documents"&&<span className="nav-chevron">⌄</span>}</button>)}
       {currentPath.startsWith("/documents")&&<div className="subnav">{types.map(type=><button key={type} className={selectedType===type?"chosen":""} onClick={()=>navigate(`/documents?type=${type}`)}><span className="type-dot">{type.slice(0,1)}</span>{TYPE_LABELS[type]}</button>)}</div>}
-      <div className="sidebar-spacer"/><button className={`nav-link ${currentPath.startsWith("/settings")?"active":""}`} onClick={()=>navigate("/settings/company")}><span className="nav-icon">⚙</span>設定</button></nav>
-      <div className="account-card"><div className="avatar">開</div><div><strong>開発ユーザー</strong><small>管理者</small></div><span className="online-dot"/></div>
+      <div className="sidebar-spacer"/><button className={`nav-link ${currentPath==="/guide"?"active":""}`} onClick={()=>navigate("/guide")}><span className="nav-icon">？</span>使い方ガイド</button><button className={`nav-link ${currentPath.startsWith("/settings")?"active":""}`} onClick={()=>navigate("/settings/company")}><span className="nav-icon">⚙</span>設定</button></nav>
+      <div className="account-card"><div className="avatar">{(actor?.name||"?").slice(0,1)}</div><div><strong>{actor?.name??"—"}</strong><small>{actor?(actor.role==="ADMIN"?"管理者":"メンバー"):""}</small></div><span className="online-dot"/></div>
     </aside>
     <main className="main-area">
-      <header className="topbar"><div className="breadcrumbs"><span>業務管理</span><i>/</i><strong>{currentPath.startsWith("/documents")?"帳票":primary.find(x=>x.path===currentPath)?.label??(currentPath==="/sales"?"売上管理":currentPath==="/products"?"商品・サービス":currentPath==="/counterparties"?"取引先":"設定")}</strong></div><div className="top-actions"><span className="today-label">{new Intl.DateTimeFormat("ja-JP",{dateStyle:"long",timeZone:"Asia/Tokyo"}).format(new Date())}</span><button className="icon-button" aria-label="通知">♧<span className="notification-dot"/></button></div></header>
+      <header className="topbar"><div className="breadcrumbs"><span>業務管理</span><i>/</i><strong>{currentPath.startsWith("/documents")?"帳票":primary.find(x=>x.path===currentPath)?.label??(currentPath==="/sales"?"売上管理":currentPath==="/products"?"商品・サービス":currentPath==="/counterparties"?"取引先":currentPath==="/guide"?"使い方ガイド":"設定")}</strong></div><div className="top-actions"><span className="today-label">{new Intl.DateTimeFormat("ja-JP",{dateStyle:"long",timeZone:"Asia/Tokyo"}).format(new Date())}</span><button className="button secondary help-button" onClick={()=>navigate("/guide")}>？　使い方</button></div></header>
       {(notice||error)&&<div role={error?"alert":"status"} className={`toast ${error?"toast-error":""}`}><span>{error||notice}</span><button onClick={()=>{setError("");setNotice("")}}>×</button></div>}
       <div className="page-content">{view}</div>
     </main>

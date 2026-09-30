@@ -31,3 +31,15 @@ pnpm exec wrangler deploy
 ```
 
 No other existing database was modified or deleted by this deployment. The owner freed one D1 slot before this database was created.
+
+## Pending — 2026-10-01 release
+
+The branch adds migration `0006_company_profile.sql`, renderer `jds-2`, the settings/users/brand-asset APIs and the in-app guide (see RELEASE_2026-10-01.md). It is **not deployed**. To release:
+
+```sh
+pnpm exec wrangler d1 migrations apply DB --remote --env production
+CLOUDFLARE_ENV=production pnpm build
+pnpm exec wrangler deploy
+```
+
+After deploying, sign in, fill 設定 (company, bank, seal), issue one test document and review the PDF produced by the managed browser.

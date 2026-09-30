@@ -3,41 +3,22 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { z } from "zod";
-import { DraftDocumentSchema, DecimalInputSchema, DOCUMENT_TYPES, type DraftDocument } from "../domain/document";
+import { BankAccountSchema, DocumentDefaultsSchema, DraftDocumentSchema, DecimalInputSchema, DOCUMENT_TYPES, type BankAccount, type DraftDocument } from "../domain/document";
 import { calculateDocumentTax } from "../domain/tax";
 import { formatDocumentNumber, DEFAULT_NUMBERING } from "../domain/numbering";
-import { renderDocumentHtml, type DocumentViewModel } from "../jds/render";
+import { PDF_FONT_STYLESHEET, pdfOptions, RENDERER_VERSION, renderDocumentHtml, type DocumentViewModel } from "../jds/render";
+import { brandAssetDataUrl, registerSettingsRoutes } from "./settings";
+import { errorResponse, id, now, parseJson, requireAdmin, type AppEnv, type Env } from "./shared";
 import { pagination, pageResult } from "./pagination";
 import puppeteer from "@cloudflare/puppeteer";
 
-interface Env {
-  DB: D1Database;
-  DOCUMENT_ARTIFACTS: R2Bucket;
-  BRAND_ASSETS: R2Bucket;
-  BROWSER: Fetcher;
-  ASSETS: Fetcher;
-  APP_ENV: string;
-  ORGANIZATION_ID: string;
-  ACCESS_TEAM_DOMAIN: string;
-  ACCESS_AUD: string;
-  SETUP_TOKEN?: string;
-}
-interface Actor { id: string; email: string; name: string; role: "ADMIN" | "MEMBER"; organizationId: string; subject?: string }
-type AppEnv = { Bindings: Env; Variables: { actor: Actor; requestId: string } };
-
 const app = new Hono<AppEnv>();
-const now = () => new Date().toISOString();
-const id = () => crypto.randomUUID();
 const constantTimeEqual = async (left: string, right: string) => {
   const [a,b] = await Promise.all([crypto.subtle.digest("SHA-256",new TextEncoder().encode(left)),crypto.subtle.digest("SHA-256",new TextEncoder().encode(right))]);
   const x=new Uint8Array(a);const y=new Uint8Array(b);let diff=0;for(let i=0;i<x.length;i++)diff|=x[i]^y[i];return diff===0;
 };
 
-function errorResponse(code: string, message: string, status: 400 | 401 | 403 | 404 | 409 | 422 | 500) {
-  return Response.json({ error: { code, message } }, { status });
-}
-
-app.use("/api/*", cors({ origin: [], allowMethods: ["GET", "POST", "PATCH"], allowHeaders: ["Content-Type", "Idempotency-Key", "If-Match"] }));
+app.use("/api/*", cors({ origin: [], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE"], allowHeaders: ["Content-Type", "Idempotency-Key", "If-Match"] }));
 app.use("/api/v1/*", async (c, next) => {
   const hostname = new URL(c.req.url).hostname;
   const localDemo = c.env.APP_ENV === "development" && ["localhost", "127.0.0.1", "0.0.0.0"].includes(hostname);
@@ -83,7 +64,7 @@ app.use("/api/v1/*", async (c, next) => {
   }
 });
 
-app.use("/api/v1/*",async(c,next)=>{await next();c.header("Cache-Control","private, no-store");c.header("X-Content-Type-Options","nosniff");c.header("Referrer-Policy","no-referrer");});
+app.use("/api/v1/*",async(c,next)=>{await next();if(!c.res.headers.get("Cache-Control")?.includes("immutable"))c.header("Cache-Control","private, no-store");c.header("X-Content-Type-Options","nosniff");c.header("Referrer-Policy","no-referrer");});
 
 app.post("/api/v1/setup/first-admin",async(c)=>{
   const actor=c.get("actor");
@@ -99,7 +80,6 @@ app.post("/api/v1/setup/first-admin",async(c)=>{
   return c.json({data:{id:adminId,role:"ADMIN"}},201);
 });
 
-function requireAdmin(actor: Actor): boolean { return actor.role === "ADMIN"; }
 const CounterpartyInput = z.object({
   name: z.string().trim().min(1).max(200), kana: z.string().max(200).optional().default(""),
   isCustomer: z.boolean().default(true), isSupplier: z.boolean().default(false),
@@ -119,22 +99,30 @@ app.get("/api/v1/session", (c) => c.json({ data: { actor: c.get("actor"), organi
 
 app.get("/api/v1/organization", async (c) => {
   const orgId = c.get("actor").organizationId;
-  const row = await c.env.DB.prepare(`SELECT o.*, s.default_tax_mode, s.tax_rounding, s.line_rounding, s.theme, s.accent_color, s.qualified_mode, s.registration_number
+  const row = await c.env.DB.prepare(`SELECT o.*, s.default_tax_mode, s.tax_rounding, s.line_rounding, s.theme, s.accent_color, s.qualified_mode, s.registration_number,
+      s.bank_json, s.payment_terms_json, s.logo_asset_id, s.seal_asset_id, s.quotation_title, s.purchase_order_title, s.delivery_show_amounts
     FROM organizations o JOIN organization_settings s ON s.organization_id=o.id WHERE o.id=?`).bind(orgId).first<Record<string, unknown>>();
-  return row ? c.json({ data: row }) : errorResponse("NOT_FOUND", "会社情報がありません。", 404);
+  if (!row) return errorResponse("NOT_FOUND", "会社情報がありません。", 404);
+  const patterns = await c.env.DB.prepare("SELECT type,pattern FROM numbering_settings WHERE organization_id=?").bind(orgId).all<{ type: string; pattern: string }>();
+  const { bank_json, payment_terms_json, ...organization } = row;
+  return c.json({ data: { ...organization,
+    bank: BankAccountSchema.parse(parseJson(bank_json, {})),
+    defaults: DocumentDefaultsSchema.parse(parseJson(payment_terms_json, {})),
+    numbering: { ...DEFAULT_NUMBERING, ...Object.fromEntries(patterns.results.map((item) => [item.type, item.pattern])) },
+  } });
 });
 
 app.patch("/api/v1/organization", async (c) => {
   const actor = c.get("actor");
   if (!requireAdmin(actor)) return errorResponse("FORBIDDEN", "管理者のみ変更できます。", 403);
-  const schema = z.object({ legal_name: z.string().trim().min(1).max(200), display_name: z.string().trim().min(1).max(200), postal_code: z.string().max(20), prefecture: z.string().max(30), address: z.string().max(300), building: z.string().max(200), phone: z.string().max(40), representative: z.string().max(100), registration_number: z.string().regex(/^T\d{13}$/).or(z.literal("")), qualified_mode: z.boolean(), theme: z.enum(["standard", "modern"]), accent_color: z.string().regex(/^#[0-9A-Fa-f]{6}$/) });
+  const schema = z.object({ legal_name: z.string().trim().min(1).max(200), display_name: z.string().trim().min(1).max(200), postal_code: z.string().max(20), prefecture: z.string().max(30), address: z.string().max(300), building: z.string().max(200), phone: z.string().max(40), representative: z.string().max(100), fax: z.string().max(40).default(""), email: z.string().max(200).default(""), website: z.string().max(300).default(""), registration_number: z.string().regex(/^T\d{13}$/).or(z.literal("")), qualified_mode: z.boolean(), theme: z.enum(["standard", "modern"]).optional(), accent_color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional() }).refine((value) => !value.qualified_mode || value.registration_number !== "");
   const parsed = schema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) return errorResponse("VALIDATION_ERROR", "会社情報を確認してください。", 422);
+  if (!parsed.success) return errorResponse("VALIDATION_ERROR", "会社情報を確認してください。登録番号は「T」と13桁の数字です。", 422);
   const d = parsed.data;
   const timestamp = now();
   const result = await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE organizations SET legal_name=?,display_name=?,postal_code=?,prefecture=?,address=?,building=?,phone=?,representative=?,updated_at=? WHERE id=?`).bind(d.legal_name,d.display_name,d.postal_code,d.prefecture,d.address,d.building,d.phone,d.representative,timestamp,actor.organizationId),
-    c.env.DB.prepare(`UPDATE organization_settings SET registration_number=?,qualified_mode=?,theme=?,accent_color=?,version=version+1,updated_at=? WHERE organization_id=?`).bind(d.registration_number || null,Number(d.qualified_mode),d.theme,d.accent_color,timestamp,actor.organizationId),
+    c.env.DB.prepare(`UPDATE organizations SET legal_name=?,display_name=?,postal_code=?,prefecture=?,address=?,building=?,phone=?,fax=?,email=?,website=?,representative=?,updated_at=? WHERE id=?`).bind(d.legal_name,d.display_name,d.postal_code,d.prefecture,d.address,d.building,d.phone,d.fax,d.email,d.website,d.representative,timestamp,actor.organizationId),
+    c.env.DB.prepare(`UPDATE organization_settings SET registration_number=?,qualified_mode=?,theme=COALESCE(?,theme),accent_color=COALESCE(?,accent_color),version=version+1,updated_at=? WHERE organization_id=?`).bind(d.registration_number || null,Number(d.qualified_mode),d.theme??null,d.accent_color??null,timestamp,actor.organizationId),
     c.env.DB.prepare(`INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,occurred_at,request_id,details_json) VALUES(?,?,?,?,?,?,?,?,?)`).bind(id(),actor.organizationId,actor.id,"ORGANIZATION_UPDATED","ORGANIZATION",actor.organizationId,timestamp,c.get("requestId"),JSON.stringify({fields:Object.keys(d)})),
   ]);
   if (result.some((item) => !item.success)) return errorResponse("SAVE_FAILED", "保存できませんでした。", 500);
@@ -184,6 +172,7 @@ app.post("/api/v1/products", async (c) => {
   const actor = c.get("actor"); const parsed = ProductInput.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return errorResponse("VALIDATION_ERROR", "商品・サービス情報を確認してください。", 422);
   const d = parsed.data; const productId = id(); const timestamp = now();
+  if (await c.env.DB.prepare("SELECT 1 FROM products WHERE organization_id=? AND code=?").bind(actor.organizationId,d.code).first()) return errorResponse("PRODUCT_CODE_EXISTS","同じ商品コードが登録されています（アーカイブ済みを含む）。",409);
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO products(id,organization_id,code,name,description,unit,unit_price_decimal,tax_class,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(productId,actor.organizationId,d.code,d.name,d.description,d.unit,d.unitPrice,d.taxClass,timestamp,timestamp),
     c.env.DB.prepare(`INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,occurred_at,request_id,details_json) VALUES(?,?,?,?,?,?,?,?,?)`).bind(id(),actor.organizationId,actor.id,"PRODUCT_CREATED","PRODUCT",productId,timestamp,c.get("requestId"),"{}"),
@@ -218,14 +207,26 @@ function viewModel(record: Awaited<ReturnType<typeof revisionFor>>): DocumentVie
   if (!record) throw new Error("Document not found");
   const row = record.row;
   const recipient = JSON.parse(row.recipient_snapshot_json) as { name?: string; postalCode?:string; address?:string; building?:string; phone?:string; department?: string; contact?: string; override?: string };
-  const issuer = JSON.parse(row.issuer_snapshot_json) as { legalName?: string; postalCode?: string; address?: string; phone?: string; representative?: string; registrationNumber?: string; qualifiedMode?: boolean };
+  const issuer = JSON.parse(row.issuer_snapshot_json) as { legalName?: string; postalCode?: string; address?: string; phone?: string; fax?: string; email?: string; website?: string; representative?: string; registrationNumber?: string; qualifiedMode?: boolean };
   const typeFields = JSON.parse(String((row as unknown as Record<string, unknown>).type_fields_json ?? "{}")) as Partial<DraftDocument>;
-  const renderSettings = JSON.parse(row.render_settings_json) as {theme?:"standard"|"modern";accentColor?:string};
+  const renderSettings = JSON.parse(row.render_settings_json) as {theme?:"standard"|"modern";accentColor?:string;sealAssetId?:string|null;logoAssetId?:string|null;quotationTitle?:string;purchaseOrderTitle?:string};
+  const bank = parseJson<Partial<BankAccount>>(row.bank_snapshot_json, {});
+  const assetUrl = (assetId?: string | null) => assetId ? `/api/v1/brand-assets/${assetId}` : undefined;
   return {
     id: row.document_id, number: row.number ?? "", revision: row.revision, status: row.state,
-    data: { type: row.type, recipientName: recipient.name ?? "",recipientPostalCode:recipient.postalCode??"",recipientAddress:recipient.address??"",recipientBuilding:recipient.building??"",recipientPhone:recipient.phone??"", department: recipient.department ?? "", contactName: recipient.contact ?? "", recipientOverride: recipient.override ?? "", subject: row.subject, issueDate: row.issue_date, transactionDate:row.transaction_date??undefined,periodStart:row.period_start??undefined,periodEnd:row.period_end??undefined,dueDate: row.due_date ?? undefined, validUntil: typeFields.validUntil??undefined, deliveryDate:typeFields.deliveryDate??undefined,requestedDeliveryDate:typeFields.requestedDeliveryDate??undefined,acceptedDate:typeFields.acceptedDate??undefined,deliveryPlace:typeFields.deliveryPlace??"",paymentTerms:typeFields.paymentTerms??"",purchaseOrderNumber:typeFields.purchaseOrderNumber??"",quotationReference:typeFields.quotationReference??"",purpose:typeFields.purpose??"",paymentMethod:typeFields.paymentMethod??"BANK_TRANSFER",showAmounts: typeFields.showAmounts ?? false,counterpartyId:row.counterparty_id??undefined, notes: row.notes, taxMode: row.tax_mode, lines: record.items.map((item:Record<string,unknown>) => ({ id: String(item.id), description: String(item.description), quantity: String(item.quantity_decimal), unit: String(item.unit), unitPrice: String(item.unit_price_decimal), taxClass: item.tax_class as DraftDocument["lines"][number]["taxClass"] })) },
-    issuer: { legalName: issuer.legalName ?? "", postalCode: issuer.postalCode, address: issuer.address, phone: issuer.phone, representative: issuer.representative, registrationNumber: issuer.registrationNumber, qualifiedMode: issuer.qualifiedMode ?? Boolean(issuer.registrationNumber) },
-    theme: renderSettings.theme ?? "standard", accentColor: renderSettings.accentColor ?? "#315b78", tax: { mode: row.tax_mode, taxRounding: row.tax_rounding, lineRounding: row.line_rounding },
+    data: { type: row.type, recipientName: recipient.name ?? "",recipientPostalCode:recipient.postalCode??"",recipientAddress:recipient.address??"",recipientBuilding:recipient.building??"",recipientPhone:recipient.phone??"", department: recipient.department ?? "", contactName: recipient.contact ?? "", recipientOverride: recipient.override ?? "", subject: row.subject, issueDate: row.issue_date, transactionDate:row.transaction_date??undefined,periodStart:row.period_start??undefined,periodEnd:row.period_end??undefined,dueDate: row.due_date ?? undefined, validUntil: typeFields.validUntil??undefined, deliveryDate:typeFields.deliveryDate??undefined,requestedDeliveryDate:typeFields.requestedDeliveryDate??undefined,acceptedDate:typeFields.acceptedDate??undefined,deliveryTerms:typeFields.deliveryTerms??"",deliveryPlace:typeFields.deliveryPlace??"",paymentTerms:typeFields.paymentTerms??"",purchaseOrderNumber:typeFields.purchaseOrderNumber??"",quotationReference:typeFields.quotationReference??"",purpose:typeFields.purpose??"",paymentMethod:typeFields.paymentMethod??"BANK_TRANSFER",showAmounts: typeFields.showAmounts ?? false,counterpartyId:row.counterparty_id??undefined, notes: row.notes, taxMode: row.tax_mode, lines: record.items.map((item:Record<string,unknown>) => ({ id: String(item.id), description: String(item.description), quantity: String(item.quantity_decimal), unit: String(item.unit), unitPrice: String(item.unit_price_decimal), taxClass: item.tax_class as DraftDocument["lines"][number]["taxClass"] })) },
+    issuer: { legalName: issuer.legalName ?? "", postalCode: issuer.postalCode, address: issuer.address, phone: issuer.phone, fax: issuer.fax, email: issuer.email, website: issuer.website, representative: issuer.representative, registrationNumber: issuer.registrationNumber, qualifiedMode: issuer.qualifiedMode ?? Boolean(issuer.registrationNumber) },
+    theme: renderSettings.theme ?? "standard", accentColor: renderSettings.accentColor ?? "#315b78", bank, assets: { sealUrl: assetUrl(renderSettings.sealAssetId), logoUrl: assetUrl(renderSettings.logoAssetId) }, titles: { QT: renderSettings.quotationTitle, PO: renderSettings.purchaseOrderTitle }, tax: { mode: row.tax_mode, taxRounding: row.tax_rounding, lineRounding: row.line_rounding },
+  };
+}
+
+const COMPANY_SNAPSHOT_COLUMNS = "o.legal_name,o.display_name,o.postal_code,o.prefecture,o.address,o.building,o.phone,o.fax,o.email,o.website,o.representative,s.default_tax_mode,s.tax_rounding,s.line_rounding,s.theme,s.accent_color,s.qualified_mode,s.registration_number,s.bank_json,s.logo_asset_id,s.seal_asset_id,s.quotation_title,s.purchase_order_title";
+/** The company-side data frozen into each revision: issuer block, bank account and rendering choices. */
+function companySnapshots(org: Record<string, unknown>) {
+  return {
+    issuer: JSON.stringify({ legalName:org.legal_name || org.display_name,postalCode:org.postal_code,address:[[org.prefecture,org.address].filter(Boolean).join(""),org.building].filter(Boolean).join(" "),phone:org.phone,fax:org.fax,email:org.email,website:org.website,representative:org.representative,registrationNumber:org.registration_number,qualifiedMode:Boolean(org.qualified_mode) }),
+    bank: String(org.bank_json ?? "{}"),
+    render: JSON.stringify({ theme:org.theme,accentColor:org.accent_color,sealAssetId:org.seal_asset_id??null,logoAssetId:org.logo_asset_id??null,quotationTitle:org.quotation_title,purchaseOrderTitle:org.purchase_order_title }),
   };
 }
 
@@ -243,17 +244,17 @@ type DraftCreateOptions = {
 async function insertDraft(c: Context<AppEnv>, data: DraftDocument, options: DraftCreateOptions = {}) {
   const actor = c.get("actor"); const orgId = actor.organizationId; const timestamp = now();
   const docId = options.documentId ?? id(); const revisionId = id(); const revision = options.revision ?? 0;
-  const org = await c.env.DB.prepare(`SELECT o.legal_name,o.display_name,o.postal_code,o.prefecture,o.address,o.building,o.phone,o.representative,s.default_tax_mode,s.tax_rounding,s.line_rounding,s.theme,s.accent_color,s.qualified_mode,s.registration_number,s.bank_json
-    FROM organizations o JOIN organization_settings s ON s.organization_id=o.id WHERE o.id=?`).bind(orgId).first<Record<string, unknown>>();
+  const org = await c.env.DB.prepare(`SELECT ${COMPANY_SNAPSHOT_COLUMNS} FROM organizations o JOIN organization_settings s ON s.organization_id=o.id WHERE o.id=?`).bind(orgId).first<Record<string, unknown>>();
   if (!org) throw new Error("ORGANIZATION_NOT_FOUND");
   const snapshot = options.snapshot;
   const taxRounding = snapshot?.tax_rounding ?? String(org.tax_rounding);
   const lineRounding = snapshot?.line_rounding ?? String(org.line_rounding);
   const tax = calculateDocumentTax(data.lines, { mode: data.taxMode, lineRounding: lineRounding as "floor"|"half-up"|"ceil", taxRounding: taxRounding as "floor"|"half-up"|"ceil" });
   const recipient = { name:data.recipientName,postalCode:data.recipientPostalCode,address:data.recipientAddress,building:data.recipientBuilding,phone:data.recipientPhone,department:data.department,contact:data.contactName,override:data.recipientOverride };
-  const issuerJson = snapshot?.issuer_snapshot_json ?? JSON.stringify({ legalName:org.legal_name || org.display_name,postalCode:org.postal_code,address:[org.prefecture,org.address,org.building].filter(Boolean).join(""),phone:org.phone,representative:org.representative,registrationNumber:org.registration_number,qualifiedMode:Boolean(org.qualified_mode) });
-  const bankJson = snapshot?.bank_snapshot_json ?? String(org.bank_json ?? "{}");
-  const renderJson = snapshot?.render_settings_json ?? JSON.stringify({theme:org.theme,accentColor:org.accent_color});
+  const company = companySnapshots(org);
+  const issuerJson = snapshot?.issuer_snapshot_json ?? company.issuer;
+  const bankJson = snapshot?.bank_snapshot_json ?? company.bank;
+  const renderJson = snapshot?.render_settings_json ?? company.render;
   const response = { id:docId,revision,version:1,state:"DRAFT",number:null,totals:tax };
   const statements: D1PreparedStatement[] = [];
   if (options.idempotency) statements.push(c.env.DB.prepare(`INSERT INTO idempotency_requests(organization_id,actor_id,operation,key,request_hash,resource_id,response_json,state,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
@@ -262,7 +263,7 @@ async function insertDraft(c: Context<AppEnv>, data: DraftDocument, options: Dra
     .bind(docId,orgId,data.type,data.counterpartyId||null,revisionId,actor.id,timestamp));
   statements.push(c.env.DB.prepare(`INSERT INTO document_revisions(id,organization_id,document_id,revision,previous_revision_id,state,version,counterparty_id,recipient_snapshot_json,recipient_search_name,issuer_snapshot_json,bank_snapshot_json,render_settings_json,issue_date,transaction_date,period_start,period_end,due_date,subject,tax_mode,tax_rounding,line_rounding,subtotal_yen,tax_yen,total_yen,tax_summary_json,notes,type_fields_json,snapshot_schema_version,created_by,created_at,updated_at)
       VALUES(?,?,?,?,?,'DRAFT',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)`)
-    .bind(revisionId,orgId,docId,revision,options.previousRevisionId??null,data.counterpartyId||null,JSON.stringify(recipient),data.recipientName,issuerJson,bankJson,renderJson,data.issueDate,data.transactionDate??null,data.periodStart??null,data.periodEnd??null,data.dueDate ?? null,data.subject,data.taxMode,taxRounding,lineRounding,tax.subtotalYen,tax.taxYen,tax.totalYen,JSON.stringify(tax.groups),data.notes,JSON.stringify({validUntil:data.validUntil ?? null,showAmounts:data.showAmounts,deliveryDate:data.deliveryDate,requestedDeliveryDate:data.requestedDeliveryDate,acceptedDate:data.acceptedDate,deliveryPlace:data.deliveryPlace,paymentTerms:data.paymentTerms,purchaseOrderNumber:data.purchaseOrderNumber,quotationReference:data.quotationReference,purpose:data.purpose,paymentMethod:data.paymentMethod,correctionReason:options.correctionReason}),actor.id,timestamp,timestamp));
+    .bind(revisionId,orgId,docId,revision,options.previousRevisionId??null,data.counterpartyId||null,JSON.stringify(recipient),data.recipientName,issuerJson,bankJson,renderJson,data.issueDate,data.transactionDate??null,data.periodStart??null,data.periodEnd??null,data.dueDate ?? null,data.subject,data.taxMode,taxRounding,lineRounding,tax.subtotalYen,tax.taxYen,tax.totalYen,JSON.stringify(tax.groups),data.notes,JSON.stringify({validUntil:data.validUntil ?? null,showAmounts:data.showAmounts,deliveryDate:data.deliveryDate,requestedDeliveryDate:data.requestedDeliveryDate,acceptedDate:data.acceptedDate,deliveryTerms:data.deliveryTerms,deliveryPlace:data.deliveryPlace,paymentTerms:data.paymentTerms,purchaseOrderNumber:data.purchaseOrderNumber,quotationReference:data.quotationReference,purpose:data.purpose,paymentMethod:data.paymentMethod,correctionReason:options.correctionReason}),actor.id,timestamp,timestamp));
   for (const [position,line] of data.lines.entries()) statements.push(c.env.DB.prepare(`INSERT INTO document_items(id,organization_id,revision_id,position,description,quantity_decimal,unit,unit_price_decimal,tax_class,line_amount_yen) VALUES(?,?,?,?,?,?,?,?,?,?)`)
     .bind(id(),orgId,revisionId,position,line.description,line.quantity,line.unit,line.unitPrice,line.taxClass,tax.lines[position].amountYen));
   if (options.documentId) statements.push(c.env.DB.prepare("UPDATE documents SET active_draft_revision_id=? WHERE organization_id=? AND id=? AND active_draft_revision_id IS NULL")
@@ -296,15 +297,21 @@ async function sha256(data: Uint8Array): Promise<string> {
   const digest=await crypto.subtle.digest("SHA-256",copyBuffer(data));
   return [...new Uint8Array(digest)].map((byte)=>byte.toString(16).padStart(2,"0")).join("");
 }
-async function makePdf(env:Env,html:string):Promise<Uint8Array>{
+async function makePdf(env:Env,organizationId:string,view:DocumentViewModel):Promise<Uint8Array>{
+  // The managed browser cannot call the authenticated asset API, so the seal and logo are embedded.
+  const assetId=(url?:string)=>url?.startsWith("/api/v1/brand-assets/")?url.slice("/api/v1/brand-assets/".length):undefined;
+  const [sealUrl,logoUrl]=await Promise.all([view.assets?.sealUrl,view.assets?.logoUrl].map(url=>{const key=assetId(url);return key?brandAssetDataUrl(env,organizationId,key):Promise.resolve(url?.startsWith("data:")?url:undefined)}));
+  const printable={...view,assets:{sealUrl,logoUrl}};
   const browser=await puppeteer.launch(env.BROWSER);
   try{
     const page=await browser.newPage();
-    await page.setContent(html,{waitUntil:"load"});
+    // Web fonts give exact Noto Sans/Serif JP; if they cannot be fetched the installed CJK fonts are used.
+    try{await page.setContent(renderDocumentHtml(printable,{fontStylesheet:PDF_FONT_STYLESHEET}),{waitUntil:"load",timeout:12000});}
+    catch{await page.setContent(renderDocumentHtml(printable),{waitUntil:"load"});}
     await page.evaluate(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(image=>image.decode().catch(()=>undefined)))});
     const pages=await page.evaluate(()=>Math.max(1,Math.ceil(document.documentElement.scrollHeight/(297*96/25.4))));
     if(pages>40)throw new Error("PDF_PAGE_LIMIT");
-    const pdf=Uint8Array.from(await page.pdf({format:"A4",printBackground:true,preferCSSPageSize:true}));
+    const pdf=Uint8Array.from(await page.pdf(pdfOptions(view)));
     await page.close();
     return pdf;
   }finally{await browser.close();}
@@ -513,7 +520,7 @@ app.patch("/api/v1/documents/:id", async (c) => {
   const tax = calculateDocumentTax(data.lines, {mode:data.taxMode,lineRounding:record.row.line_rounding,taxRounding:record.row.tax_rounding});
   const recipient = JSON.stringify({name:data.recipientName,postalCode:data.recipientPostalCode,address:data.recipientAddress,building:data.recipientBuilding,phone:data.recipientPhone,department:data.department,contact:data.contactName,override:data.recipientOverride});
   const previousTypeFields=JSON.parse(record.row.type_fields_json) as {correctionReason?:string};
-  const typeFields={validUntil:data.validUntil ?? null,showAmounts:data.showAmounts,deliveryDate:data.deliveryDate,requestedDeliveryDate:data.requestedDeliveryDate,acceptedDate:data.acceptedDate,deliveryPlace:data.deliveryPlace,paymentTerms:data.paymentTerms,purchaseOrderNumber:data.purchaseOrderNumber,quotationReference:data.quotationReference,purpose:data.purpose,paymentMethod:data.paymentMethod,correctionReason:previousTypeFields.correctionReason};
+  const typeFields={validUntil:data.validUntil ?? null,showAmounts:data.showAmounts,deliveryDate:data.deliveryDate,requestedDeliveryDate:data.requestedDeliveryDate,acceptedDate:data.acceptedDate,deliveryTerms:data.deliveryTerms,deliveryPlace:data.deliveryPlace,paymentTerms:data.paymentTerms,purchaseOrderNumber:data.purchaseOrderNumber,quotationReference:data.quotationReference,purpose:data.purpose,paymentMethod:data.paymentMethod,correctionReason:previousTypeFields.correctionReason};
   const update = c.env.DB.prepare(`UPDATE document_revisions SET version=?,counterparty_id=?,recipient_snapshot_json=?,recipient_search_name=?,issue_date=?,transaction_date=?,period_start=?,period_end=?,due_date=?,subject=?,tax_mode=?,subtotal_yen=?,tax_yen=?,total_yen=?,tax_summary_json=?,notes=?,type_fields_json=?,updated_at=?
     WHERE organization_id=? AND document_id=? AND id=? AND state='DRAFT' AND version=?`)
     .bind(nextVersion,data.counterpartyId||null,recipient,data.recipientName,data.issueDate,data.transactionDate??null,data.periodStart??null,data.periodEnd??null,data.dueDate ?? null,data.subject,data.taxMode,tax.subtotalYen,tax.taxYen,tax.totalYen,JSON.stringify(tax.groups),data.notes,JSON.stringify(typeFields),timestamp,actor.organizationId,docId,revisionId,version);
@@ -547,13 +554,12 @@ app.post("/api/v1/documents/:id/refresh-issuer",async(c)=>{
   if(record.row.revision>0&&!requireAdmin(actor))return errorResponse("FORBIDDEN","改訂書類の更新は管理者のみ実行できます。",403);
   const version=Number(c.req.header("If-Match"));
   if(!Number.isSafeInteger(version)||version!==record.row.version)return errorResponse("VERSION_CONFLICT","最新の下書きを確認してください。",409);
-  const org=await c.env.DB.prepare(`SELECT o.legal_name,o.display_name,o.postal_code,o.prefecture,o.address,o.building,o.phone,o.representative,s.registration_number,s.qualified_mode
-    FROM organizations o JOIN organization_settings s ON s.organization_id=o.id WHERE o.id=?`).bind(actor.organizationId).first<Record<string,unknown>>();
+  const org=await c.env.DB.prepare(`SELECT ${COMPANY_SNAPSHOT_COLUMNS} FROM organizations o JOIN organization_settings s ON s.organization_id=o.id WHERE o.id=?`).bind(actor.organizationId).first<Record<string,unknown>>();
   if(!org)return errorResponse("NOT_FOUND","会社情報がありません。",404);
-  const issuer=JSON.stringify({legalName:org.legal_name||org.display_name,postalCode:org.postal_code,address:[org.prefecture,org.address,org.building].filter(Boolean).join(""),phone:org.phone,representative:org.representative,registrationNumber:org.registration_number,qualifiedMode:Boolean(org.qualified_mode)});
+  const company=companySnapshots(org);
   const timestamp=now();
   try{await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE document_revisions SET issuer_snapshot_json=?,version=version+1,updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=?").bind(issuer,timestamp,actor.organizationId,record.row.id,version),
+    c.env.DB.prepare("UPDATE document_revisions SET issuer_snapshot_json=?,bank_snapshot_json=?,render_settings_json=?,version=version+1,updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=?").bind(company.issuer,company.bank,company.render,timestamp,actor.organizationId,record.row.id,version),
     c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'stale draft version' WHERE changes()<>1"),
     c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(id(),actor.organizationId,actor.id,"DRAFT_ISSUER_REFRESHED","DOCUMENT",docId,record.row.id,timestamp,c.get("requestId"),JSON.stringify({version:version+1})),
   ]);}catch{return errorResponse("VERSION_CONFLICT","別の変更が保存されています。最新の内容を確認してください。",409);}
@@ -685,7 +691,7 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
         c.env.DB.prepare("UPDATE number_sequences SET last_value=?,pattern_snapshot=? WHERE organization_id=? AND type=? AND year=? AND last_value=? AND pattern_snapshot=?").bind(next,pattern,actor.organizationId,record.row.type,seqYear,previous,previousPattern),
         c.env.DB.prepare("INSERT INTO number_reservations(id,organization_id,document_id,type,year,sequence_value,formatted_number,reserved_at) SELECT ?,?,?,?,?,?,?,? FROM number_sequences WHERE organization_id=? AND type=? AND year=? AND last_value=? AND pattern_snapshot=? AND NOT EXISTS(SELECT 1 FROM number_reservations WHERE organization_id=? AND document_id=?)").bind(reservationId,actor.organizationId,docId,record.row.type,seqYear,next,number,timestamp,actor.organizationId,record.row.type,seqYear,next,pattern,actor.organizationId,docId),
         c.env.DB.prepare("UPDATE documents SET number=?,number_year=?,sequence_value=? WHERE organization_id=? AND id=? AND number IS NULL AND EXISTS(SELECT 1 FROM number_reservations WHERE organization_id=? AND document_id=? AND formatted_number=?)").bind(number,seqYear,next,actor.organizationId,docId,actor.organizationId,docId,number),
-        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='jds-1',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=? AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,expectedVersion,actor.organizationId,docId,number),
+        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='"+RENDERER_VERSION+"',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=? AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,expectedVersion,actor.organizationId,docId,number),
         c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'stale issue version' WHERE changes()<>1"),
         c.env.DB.prepare("INSERT INTO issue_jobs(id,organization_id,revision_id,state,snapshot_hash,snapshot_json,object_key,created_at,updated_at) SELECT ?,?,?, 'PENDING',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM document_revisions WHERE organization_id=? AND id=? AND state='ISSUING')").bind(jobId,actor.organizationId,record.row.id,snapshotHash,snapshotJson,objectKey,timestamp,timestamp,actor.organizationId,record.row.id),
         c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=?)").bind(id(),actor.organizationId,actor.id,"DOCUMENT_ISSUE_REQUESTED","DOCUMENT",docId,record.row.id,timestamp,c.get("requestId"),JSON.stringify({number}),jobId,actor.organizationId),
@@ -702,7 +708,7 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
       const objectKey=`organization/${actor.organizationId}/documents/${reservationYear}/${docId}/revision-${record.row.revision}.pdf`;
       try {
       const prepared=await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='jds-1',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=? AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,expectedVersion,actor.organizationId,docId,existingReservation.formatted_number),
+        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='"+RENDERER_VERSION+"',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=? AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,expectedVersion,actor.organizationId,docId,existingReservation.formatted_number),
         c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'stale issue version' WHERE changes()<>1"),
         c.env.DB.prepare("INSERT INTO issue_jobs(id,organization_id,revision_id,state,snapshot_hash,snapshot_json,object_key,created_at,updated_at) SELECT ?,?,?, 'PENDING',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM document_revisions WHERE organization_id=? AND id=? AND state='ISSUING')").bind(jobId,actor.organizationId,record.row.id,snapshotHash,snapshotJson,objectKey,timestamp,timestamp,actor.organizationId,record.row.id),
         c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=?)").bind(id(),actor.organizationId,actor.id,"DOCUMENT_ISSUE_REQUESTED","DOCUMENT",docId,record.row.id,timestamp,c.get("requestId"),JSON.stringify({number:existingReservation.formatted_number,revision:record.row.revision}),jobId,actor.organizationId),
@@ -741,9 +747,9 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
         if(await sha256(new TextEncoder().encode(job.snapshot_json))!==snapshotHash)throw new Error("SNAPSHOT_HASH_MISMATCH");
         frozenView=(JSON.parse(job.snapshot_json) as {view:DocumentViewModel}).view;
       }
-      const rendered=await makePdf(c.env,renderDocumentHtml(frozenView));
+      const rendered=await makePdf(c.env,actor.organizationId,frozenView);
       pdfBytes=rendered;fileHash=await sha256(pdfBytes);
-      const created=await c.env.DOCUMENT_ARTIFACTS.put(job.object_key,pdfBytes,{onlyIf:{etagDoesNotMatch:"*"},httpMetadata:{contentType:"application/pdf",cacheControl:"private, no-store"},customMetadata:{sha256:fileHash,snapshotHash,rendererVersion:"jds-1"}});
+      const created=await c.env.DOCUMENT_ARTIFACTS.put(job.object_key,pdfBytes,{onlyIf:{etagDoesNotMatch:"*"},httpMetadata:{contentType:"application/pdf",cacheControl:"private, no-store"},customMetadata:{sha256:fileHash,snapshotHash,rendererVersion:RENDERER_VERSION}});
       if(!created){
         const raced=await c.env.DOCUMENT_ARTIFACTS.get(job.object_key);
         if(!raced||raced.customMetadata?.snapshotHash!==snapshotHash||raced.customMetadata?.sha256!==fileHash)throw new Error("ARTIFACT_HASH_MISMATCH");
@@ -754,7 +760,7 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
     await c.env.DB.prepare("UPDATE issue_jobs SET state='STORED',lease_expires_at=?,updated_at=? WHERE organization_id=? AND id=? AND lease_token=? AND lease_expires_at>?").bind(expires,storedAt,actor.organizationId,job.id,token,storedAt).run();
     const fileId=id();
     await c.env.DB.batch([
-      c.env.DB.prepare("INSERT INTO document_files(id,organization_id,revision_id,kind,object_key,sha256,bytes,mime,generated_at,renderer_version) SELECT ?,?,?,?,?,?,?,'application/pdf',?,'jds-1' WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=? AND state='STORED' AND lease_token=?) ON CONFLICT(organization_id,revision_id,kind) DO NOTHING").bind(fileId,actor.organizationId,record.row.id,"ISSUED_PDF",job.object_key,fileHash,pdfBytes.byteLength,storedAt,job.id,actor.organizationId,token),
+      c.env.DB.prepare("INSERT INTO document_files(id,organization_id,revision_id,kind,object_key,sha256,bytes,mime,generated_at,renderer_version) SELECT ?,?,?,?,?,?,?,'application/pdf',?,'"+RENDERER_VERSION+"' WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=? AND state='STORED' AND lease_token=?) ON CONFLICT(organization_id,revision_id,kind) DO NOTHING").bind(fileId,actor.organizationId,record.row.id,"ISSUED_PDF",job.object_key,fileHash,pdfBytes.byteLength,storedAt,job.id,actor.organizationId,token),
       c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'issue finalize conflict' WHERE NOT EXISTS(SELECT 1 FROM document_files WHERE organization_id=? AND revision_id=? AND kind='ISSUED_PDF' AND object_key=? AND sha256=?)").bind(actor.organizationId,record.row.id,job.object_key,fileHash),
       c.env.DB.prepare("UPDATE document_revisions SET state='ISSUED',issued_at=?,updated_at=? WHERE organization_id=? AND id=? AND state='ISSUING' AND EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=? AND state='STORED' AND lease_token=?)").bind(storedAt,storedAt,actor.organizationId,record.row.id,job.id,actor.organizationId,token),
       c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'issue finalize conflict' WHERE changes()<>1"),
@@ -821,8 +827,7 @@ app.post("/api/v1/documents/:id/preview", async (c) => {
   const record = await revisionFor(c,c.req.param("id"));
   if (!record) return errorResponse("NOT_FOUND", "帳票が見つかりません。", 404);
   try {
-    const html = renderDocumentHtml(viewModel(record));
-    const pdf=await makePdf(c.env,html);
+    const pdf=await makePdf(c.env,c.get("actor").organizationId,viewModel(record));
     return new Response(copyBuffer(pdf),{headers:{"Content-Type":"application/pdf","Content-Disposition":"inline; filename*=UTF-8''document-preview.pdf","Cache-Control":"private, no-store"}});
   } catch (error) {
     console.error("pdf_preview_failed",{requestId:c.get("requestId"),error:String(error)});
@@ -885,6 +890,8 @@ app.get("/api/v1/sales/overdue",async(c)=>{
     WHERE d.organization_id=? AND d.type='INV' AND r.state='ISSUED' AND r.due_date<? GROUP BY d.id,r.id HAVING outstanding_yen>0 ORDER BY r.due_date ASC LIMIT 20`).bind(c.get("actor").organizationId,today).all();
   return c.json({data:rows.results});
 });
+
+registerSettingsRoutes(app);
 
 app.get("/api/v1/health", (c) => c.json({data:{status:"ok",runtime:"cloudflare-workers"}}));
 app.notFound((c) => c.req.path.startsWith("/api/") ? errorResponse("NOT_FOUND","APIが見つかりません。",404) : c.env.ASSETS.fetch(c.req.raw));

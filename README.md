@@ -28,13 +28,21 @@ pnpm build
 
 Kiểm tra giao diện dùng Chromium của Playwright; cài browser lần đầu bằng `pnpm exec playwright install chromium` nếu máy chưa có. Các test giao diện dùng API fixtures.
 
-Migration `0005_audit_guards.sql` bổ sung khóa phát hành/thanh toán và chuẩn hóa giá legacy. Chi tiết thay đổi, retry và bỏ correction: [Khắc phục audit](docs/AUDIT_FIXES.md).
+Migration `0005_audit_guards.sql` bổ sung khóa phát hành/thanh toán và chuẩn hóa giá legacy ([Khắc phục audit](docs/AUDIT_FIXES.md)); `0006_company_profile.sql` thêm cột FAX của công ty.
+
+`pnpm test:e2e` còn xuất PDF mẫu của cả sáu loại chứng từ, hai mẫu thiết kế, vào `test-results/samples/` để kiểm tra bằng mắt.
 
 ## Phạm vi hiện tại
 
-Luồng tạo và phát hành bán hàng, lịch sử PDF, thanh toán/điều chỉnh, biên nhận, báo cáo và tìm kiếm hoạt động trong môi trường local. 発注書 (PO) được phát hành từ công ty tới nhà cung cấp; 注文請書 (OC) được phát hành từ công ty tới khách hàng để xác nhận đã nhận đơn. Cả hai dùng luồng đánh số, PDF và lưu trữ chung, đồng thời kiểm tra đúng vai trò đối tác.
+- Sáu loại chứng từ (見積書, 注文請書, 納品書, 請求書, 領収書, 発注書) dùng chung một renderer A4 với hai mẫu STANDARD (tiêu đề Mincho, bảng kẻ, đơn sắc) và MODERN (màu nhấn). Chứng từ có cột đơn giá, bảng thuế theo từng thuế suất, dấu ※ cho thuế suất giảm, mã đăng ký インボイス, tài khoản ngân hàng, con dấu/logo, số trang. Mẫu: [docs/samples](docs/samples).
+- 設定 đầy đủ: thông tin công ty, インボイス, con dấu/logo (R2), tài khoản ngân hàng, mẫu thiết kế, làm tròn thuế, giá trị mặc định, quy tắc đánh số, người dùng và quyền.
+- Danh mục đối tác và hàng hóa: thêm, sửa, lưu trữ (xóa mềm).
+- Phát hành bất biến (PDF + SHA-256 trên R2), sửa đổi bằng 改訂, thanh toán/điều chỉnh, biên nhận, báo cáo doanh thu, tìm kiếm.
+- Hướng dẫn trong ứng dụng (使い方ガイド, tiếng Nhật và tiếng Việt) và [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
-Production đã deploy tại https://docs-manager.bangluutru.workers.dev với Cloudflare Access, D1, R2 và Browser Run. Xem [trạng thái triển khai và các bước kiểm chứng còn lại](docs/CLOUDFLARE_DEPLOY_STATUS.md); backup/restore và các cổng release còn cần hoàn tất.
+Chi tiết đợt hoàn thiện 2026-10-01: [docs/RELEASE_2026-10-01.md](docs/RELEASE_2026-10-01.md).
+
+Production: https://docs-manager.bangluutru.workers.dev (Cloudflare Access, D1, R2, Browser Run). Trạng thái: [docs/CLOUDFLARE_DEPLOY_STATUS.md](docs/CLOUDFLARE_DEPLOY_STATUS.md).
 
 ## Deploy Cloudflare
 

@@ -1,4 +1,5 @@
-import type { DraftDocument, DocumentType } from "../domain/document";
+import type { BankAccount, DocumentDefaults, DraftDocument, DocumentType } from "../domain/document";
+import type { DocumentViewModel } from "../jds/render";
 
 export interface DocumentSummary {
   id: string; type: DocumentType; number: string | null; revision: number; state: string;
@@ -17,10 +18,17 @@ export interface Organization {
   address: string; building: string; phone: string; representative: string; default_tax_mode: "exclusive"|"inclusive";
   tax_rounding: "floor"|"half-up"|"ceil"; line_rounding: "floor"|"half-up"|"ceil";
   theme: "standard"|"modern"; accent_color: string; qualified_mode: number; registration_number: string | null;
+  fax: string; email: string; website: string; logo_asset_id: string | null; seal_asset_id: string | null;
+  quotation_title: string; purchase_order_title: string; delivery_show_amounts: number;
+  bank: BankAccount; defaults: DocumentDefaults; numbering: Record<DocumentType, string>;
 }
+export type DocumentSnapshot = Pick<DocumentViewModel, "issuer" | "theme" | "accentColor" | "tax" | "bank" | "assets" | "titles">;
+export interface DocumentRecord extends DocumentSnapshot { id: string; number: string; revision: number; status: string; version: number; sentAt: string | null; data: DraftDocument }
+export interface UserAccount { id: string; email: string; display_name: string; role: "ADMIN" | "MEMBER"; active: number; signed_in: number; created_at: string }
+export interface SessionActor { id: string; role: "ADMIN" | "MEMBER"; name: string; email: string }
 
 export interface Page<T> {data:T[];nextCursor:string|null}
-export interface Counterparty {id:string;name:string;kana:string;is_customer:number;is_supplier:number;postal_code:string;prefecture:string;address:string;building:string;phone:string}
+export interface Counterparty {id:string;name:string;kana:string;is_customer:number;is_supplier:number;postal_code:string;prefecture:string;address:string;building:string;phone:string;email:string;notes:string}
 export interface Product {id:string;code:string;name:string;description:string;unit:string;unit_price_decimal:string;tax_class:string}
 
 async function requestEnvelope<T>(path: string, options?: RequestInit): Promise<{data:T;nextCursor:string|null}> {
@@ -64,7 +72,18 @@ async function requestIdempotently<T>(operation: string, path: string, body: unk
 }
 export const api = {
   getOrganization: () => request<Organization>("/api/v1/organization"),
-  session: () => request<{actor:{role:"ADMIN"|"MEMBER";name:string;email:string}}>("/api/v1/session"),
+  session: () => request<{actor:SessionActor}>("/api/v1/session"),
+  saveDocumentSettings: (data: object) => request<{ saved: boolean }>("/api/v1/settings/documents", { method: "PUT", body: JSON.stringify(data) }),
+  saveBank: (data: BankAccount) => request<{ saved: boolean }>("/api/v1/settings/bank", { method: "PUT", body: JSON.stringify(data) }),
+  uploadBrandAsset: (kind: "logo" | "seal", file: Blob, width: number, height: number) => request<{ id: string }>(`/api/v1/brand-assets/${kind}?width=${width}&height=${height}`, { method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream" } }),
+  removeBrandAsset: (kind: "logo" | "seal") => request<{ removed: boolean }>(`/api/v1/brand-assets/${kind}`, { method: "DELETE" }),
+  users: () => request<UserAccount[]>("/api/v1/users"),
+  addUser: (data: { email: string; displayName: string; role: "ADMIN" | "MEMBER" }) => request<{ id: string }>("/api/v1/users", { method: "POST", body: JSON.stringify(data) }),
+  updateUser: (id: string, data: { displayName?: string; role?: "ADMIN" | "MEMBER"; active?: boolean }) => request<{ saved: boolean }>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(data) }),
+  updateCounterparty: (id: string, data: object) => request<{ saved: boolean }>(`/api/v1/counterparties/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(data) }),
+  archiveCounterparty: (id: string) => request<{ archived: boolean }>(`/api/v1/counterparties/${encodeURIComponent(id)}/archive`, { method: "POST", body: "{}" }),
+  updateProduct: (id: string, data: object) => request<{ saved: boolean }>(`/api/v1/products/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(data) }),
+  archiveProduct: (id: string) => request<{ archived: boolean }>(`/api/v1/products/${encodeURIComponent(id)}/archive`, { method: "POST", body: "{}" }),
   saveOrganization: (data: object) => request<{ saved: boolean }>("/api/v1/organization", { method: "PATCH", body: JSON.stringify(data) }),
   documentsPage: (query="",type="",filters?:Partial<DocumentFilters>,cursor?:string) => {
     const params=new URLSearchParams({q:query,type,...pageQuery(cursor)});
@@ -72,7 +91,7 @@ export const api = {
     return requestEnvelope<DocumentSummary[]>(`/api/v1/documents?${params}`);
   },
   documents: async(query="",type="",filters?:Partial<DocumentFilters>) => (await api.documentsPage(query,type,filters)).data,
-  document: (id: string) => request<{ id:string;number:string;revision:number;status:string;version:number;sentAt:string|null;data:DraftDocument;issuer:{legalName:string;postalCode?:string;address?:string;phone?:string;representative?:string;registrationNumber?:string};theme:"standard"|"modern";accentColor:string;tax:{mode:"exclusive"|"inclusive";lineRounding:"floor"|"half-up"|"ceil";taxRounding:"floor"|"half-up"|"ceil"} }>(`/api/v1/documents/${encodeURIComponent(id)}`),
+  document: (id: string) => request<DocumentRecord>(`/api/v1/documents/${encodeURIComponent(id)}`),
   createDocument: (data: DraftDocument) => request<{id:string;version:number}>("/api/v1/documents", { method: "POST", body: JSON.stringify(data) }),
   saveDocument: (id: string, version: number, data: DraftDocument) => request<{saved:boolean;version:number}>(`/api/v1/documents/${encodeURIComponent(id)}`, { method:"PATCH", headers:{"If-Match":String(version)}, body:JSON.stringify(data) }),
   previewPdf: async (id: string) => {

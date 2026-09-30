@@ -37,6 +37,7 @@ export const DraftDocumentSchema = z.object({
   deliveryDate: BusinessDateSchema.optional(),
   requestedDeliveryDate: BusinessDateSchema.optional(),
   acceptedDate: BusinessDateSchema.optional(),
+  deliveryTerms: z.string().trim().max(100).default(""),
   deliveryPlace: z.string().trim().max(300).default(""),
   paymentTerms: z.string().trim().max(300).default(""),
   purchaseOrderNumber: z.string().trim().max(100).default(""),
@@ -67,3 +68,47 @@ export function recipientLine(data: Pick<DraftDocument, "recipientName" | "depar
 }
 
 export function documentTitle(type: DocumentType): string { return documentTitles[type]; }
+
+/** "2026-10-01" → "2026年10月1日". Unparseable input is returned unchanged. */
+export function formatJaDate(value: string | null | undefined): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? "");
+  return match ? `${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日` : (value ?? "");
+}
+
+export const BANK_ACCOUNT_TYPES = ["ORDINARY", "CHECKING", "SAVINGS"] as const;
+export const bankAccountTypeLabels: Record<typeof BANK_ACCOUNT_TYPES[number], string> = { ORDINARY: "普通", CHECKING: "当座", SAVINGS: "貯蓄" };
+export const BankAccountSchema = z.object({
+  bankName: z.string().trim().max(60).default(""),
+  branchName: z.string().trim().max(60).default(""),
+  accountType: z.enum(BANK_ACCOUNT_TYPES).default("ORDINARY"),
+  accountNumber: z.string().trim().max(20).regex(/^[0-9]*$/, "口座番号は数字で入力してください").default(""),
+  accountHolder: z.string().trim().max(100).default(""),
+  note: z.string().trim().max(200).default(""),
+});
+export type BankAccount = z.infer<typeof BankAccountSchema>;
+export const DEFAULT_BANK_NOTE = "恐れ入りますが、振込手数料は貴社にてご負担くださいますようお願い申し上げます。";
+
+export const paymentMethodLabels = { BANK_TRANSFER: "銀行振込", CASH: "現金", CARD: "クレジットカード", OTHER: "その他" } as const;
+
+/** Defaults applied to a brand-new draft; stored in organization_settings.payment_terms_json. */
+export const DocumentDefaultsSchema = z.object({
+  paymentTerms: z.string().trim().max(300).default(""),
+  quoteValidDays: z.number().int().min(0).max(365).default(30),
+  dueRule: z.enum(["NONE", "NEXT_MONTH_END", "MONTH_END", "DAYS_30"]).default("NEXT_MONTH_END"),
+  quoteNotes: z.string().max(2000).default(""),
+  invoiceNotes: z.string().max(2000).default(""),
+});
+export type DocumentDefaults = z.infer<typeof DocumentDefaultsSchema>;
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const iso = (date: Date) => `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+export function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + days); return iso(d);
+}
+export function dueDateFor(issueDate: string, rule: DocumentDefaults["dueRule"]): string | undefined {
+  const d = new Date(`${issueDate}T00:00:00Z`);
+  if (rule === "NONE" || !Number.isFinite(d.getTime())) return undefined;
+  if (rule === "DAYS_30") return addDays(issueDate, 30);
+  // Day 0 of month N+1 is the last day of month N.
+  return iso(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + (rule === "NEXT_MONTH_END" ? 2 : 1), 0)));
+}
