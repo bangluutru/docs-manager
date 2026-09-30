@@ -32,14 +32,11 @@ pnpm exec wrangler deploy
 
 No other existing database was modified or deleted by this deployment. The owner freed one D1 slot before this database was created.
 
-## Pending — 2026-10-01 release
+## 2026-10-01 release — deployed
 
-The branch adds migration `0006_company_profile.sql`, renderer `jds-2`, the settings/users/brand-asset APIs and the in-app guide (see RELEASE_2026-10-01.md). It is **not deployed**. To release:
+- PR #3 merged to `main` (merge commit `f13517c`).
+- Migration `0006_company_profile.sql` applied to remote D1. Time Travel bookmark taken just before it: `000000df-00000000-000050f6-d14ca0c1f88bf138420d0047219e506d`.
+- Worker deployed, version `3a21b6f2-3e39-47f4-b61c-f602c059078d`; bindings DB, DOCUMENT_ARTIFACTS, BRAND_ASSETS, BROWSER, ASSETS and the five-minute cron unchanged.
+- Unauthenticated requests to `/`, `/api/v1/health` and `/api/v1/organization` still redirect to Cloudflare Access login.
 
-```sh
-pnpm exec wrangler d1 migrations apply DB --remote --env production
-CLOUDFLARE_ENV=production pnpm build
-pnpm exec wrangler deploy
-```
-
-After deploying, sign in, fill 設定 (company, bank, seal), issue one test document and review the PDF produced by the managed browser.
+Still to check after signing in: fill 設定 (company, bank, seal), issue one test document and review the PDF from the managed browser.
