@@ -37,14 +37,14 @@ describe("outgoing purchase documents", () => {
   it("issues a PO from our company to a supplier and stores its immutable PDF", async () => {
     const draft = await createPurchaseDraft("PO", "supplier");
     const response = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${draft.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "issue-po-test-key" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "issue-po-test-key" }, body: "{}",
     }));
     expect(response.status).toBe(200);
     const result = (await response.json() as { data: { issued: boolean; number: string } }).data;
     expect(result).toMatchObject({ issued: true });
     expect(result.number).toMatch(/^PO-2026-/);
     const retry = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${draft.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "issue-po-test-key" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "issue-po-test-key" }, body: "{}",
     }));
     const retryResult = (await retry.json() as { data: { number: string } }).data;
     expect(retry.status).toBe(200);
@@ -62,7 +62,7 @@ describe("outgoing purchase documents", () => {
     const role = await db.prepare("SELECT is_customer,is_supplier FROM counterparties WHERE id=?").bind(draft.counterpartyId).first<{is_customer:number;is_supplier:number}>();
     expect(role).toEqual({ is_customer: 1, is_supplier: 0 });
     const response = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${draft.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "issue-oc-test-key" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "issue-oc-test-key" }, body: "{}",
     }));
     expect(response.status).toBe(200);
     const result = (await response.json() as { data: { issued: boolean; number: string } }).data;
@@ -70,7 +70,7 @@ describe("outgoing purchase documents", () => {
     expect(result.number).toMatch(/^OC-2026-/);
 
     const retry = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${draft.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "issue-oc-test-key" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "issue-oc-test-key" }, body: "{}",
     }));
     expect(retry.status).toBe(200);
     expect((await retry.json() as { data: { number: string } }).data.number).toBe(result.number);
@@ -97,7 +97,7 @@ describe("outgoing purchase documents", () => {
   it("rejects a supplier-only OC before reserving an issue number", async () => {
     const draft = await createPurchaseDraft("OC", "supplier");
     const response = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${draft.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "issue-oc-wrong-role" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "issue-oc-wrong-role" }, body: "{}",
     }));
     expect(response.status).toBe(422);
     expect((await response.json() as { error: { code: string } }).error.code).toBe("COUNTERPARTY_ROLE_MISMATCH");
@@ -112,7 +112,7 @@ describe("outgoing purchase documents", () => {
     await db.prepare("UPDATE document_revisions SET type_fields_json=? WHERE id=?")
       .bind(JSON.stringify({ acceptedDate: null, deliveryDate: "2026-10-15", paymentTerms: "月末締め翌月末払い", purchaseOrderNumber: "CUST-001" }), draft.revisionId).run();
     const response = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${draft.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "issue-oc-missing-date" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "issue-oc-missing-date" }, body: "{}",
     }));
     expect(response.status).toBe(422);
     expect((await response.json() as { error: { code: string } }).error.code).toBe("ISSUE_VALIDATION");
@@ -123,7 +123,7 @@ describe("outgoing purchase documents", () => {
   it("rejects the wrong master-data role before reserving an issue number", async () => {
     const draft = await createPurchaseDraft("PO", "customer");
     const response = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${draft.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "issue-po-wrong-role" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "issue-po-wrong-role" }, body: "{}",
     }));
     expect(response.status).toBe(422);
     expect((await response.json() as { error: { code: string } }).error.code).toBe("COUNTERPARTY_ROLE_MISMATCH");

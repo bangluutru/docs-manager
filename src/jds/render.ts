@@ -9,6 +9,7 @@ export interface IssuerSnapshot {
   phone?: string;
   representative?: string;
   registrationNumber?: string;
+  qualifiedMode?: boolean;
 }
 
 export interface DocumentViewModel {

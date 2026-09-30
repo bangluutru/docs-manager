@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type DocumentFilters, type DocumentSummary, type Organization } from "./api";
 import { DocumentEditor } from "./views/DocumentEditor";
 import { Documents } from "./views/Documents";
@@ -15,6 +15,7 @@ export function App() {
   const [path,setPath] = useState(window.location.pathname + window.location.search);
   const [org,setOrg] = useState<Organization | null>(null);
   const [docs,setDocs] = useState<DocumentSummary[]>([]);
+  const [nextCursor,setNextCursor]=useState<string|null>(null);const [loadingMore,setLoadingMore]=useState(false);const listGeneration=useRef(0);
   const [query,setQuery] = useState("");
   const [notice,setNotice] = useState("");
   const [error,setError] = useState("");
@@ -27,17 +28,25 @@ export function App() {
     window.addEventListener("popstate",onPop); return ()=>window.removeEventListener("popstate",onPop);
   },[]);
   useEffect(()=>{ api.getOrganization().then(setOrg).catch((e)=>setError(e.message)); },[refresh]);
-  useEffect(()=>{ api.documents(query,selectedType,filters).then(setDocs).catch(()=>setDocs([])); },[query,refresh,selectedType,filters]);
+  useEffect(()=>{
+    const generation=++listGeneration.current;setNextCursor(null);setLoadingMore(false);
+    api.documentsPage(query,selectedType,filters).then(page=>{if(generation===listGeneration.current){setDocs(page.data);setNextCursor(page.nextCursor)}}).catch(e=>{if(generation===listGeneration.current){setDocs([]);setError(e.message)}});
+    return()=>{listGeneration.current++};
+  },[query,refresh,selectedType,filters,currentPath]);
+  async function loadMoreDocuments(){
+    if(!nextCursor||loadingMore)return;const generation=listGeneration.current;setLoadingMore(true);
+    try{const page=await api.documentsPage(query,selectedType,filters,nextCursor);if(generation===listGeneration.current){setDocs(old=>[...old,...page.data]);setNextCursor(page.nextCursor)}}catch(e){if(generation===listGeneration.current)setError(e instanceof Error?e.message:"読み込めませんでした。")}finally{if(generation===listGeneration.current)setLoadingMore(false)}
+  }
   function navigate(to:string){window.history.pushState({},"",to);setPath(to);setError("");setNotice("");window.scrollTo(0,0);}
   function flash(message:string){setNotice(message);window.setTimeout(()=>setNotice(""),3500);}
   const view = currentPath==="/" ? <Home organization={org} documents={docs} navigate={navigate} />
-    : currentPath==="/documents/new" || /^\/documents\/[^/]+\/edit$/.test(currentPath) ? <DocumentEditor path={currentPath} organization={org} navigate={navigate} flash={flash} />
-    : currentPath==="/documents" ? <Documents documents={docs} selectedType={selectedType} query={query} setQuery={setQuery} filters={filters} setFilter={(key,value)=>setFilters(old=>({...old,[key]:value}))} navigate={navigate} />
+    : currentPath==="/documents/new" || /^\/documents\/[^/]+\/edit$/.test(currentPath) ? <DocumentEditor key={path} path={currentPath} organization={org} navigate={navigate} flash={flash} />
+    : currentPath==="/documents" ? <Documents documents={docs} selectedType={selectedType} query={query} setQuery={setQuery} filters={filters} setFilter={(key,value)=>setFilters(old=>({...old,[key]:value}))} navigate={navigate} hasMore={!!nextCursor} loadingMore={loadingMore} loadMore={()=>void loadMoreDocuments()} />
     : currentPath==="/sales" ? <Sales />
     : currentPath==="/counterparties" ? <Masters kind="counterparties" />
     : currentPath==="/products" ? <Masters kind="products" />
     : currentPath.startsWith("/settings") ? <Settings organization={org} saved={()=>{setRefresh((n)=>n+1);flash("会社情報を保存しました。")}} />
-    : <Documents documents={docs} selectedType="" query={query} setQuery={setQuery} filters={filters} setFilter={(key,value)=>setFilters(old=>({...old,[key]:value}))} navigate={navigate} />;
+    : <Documents documents={docs} selectedType="" query={query} setQuery={setQuery} filters={filters} setFilter={(key,value)=>setFilters(old=>({...old,[key]:value}))} navigate={navigate} hasMore={!!nextCursor} loadingMore={loadingMore} loadMore={()=>void loadMoreDocuments()} />;
   return <div className="app-shell">
     <aside className="sidebar">
       <button className="brand" onClick={()=>navigate("/")}><span className="brand-mark">帳</span><span><strong>JDS</strong><small>BUSINESS DOCUMENTS</small></span></button>

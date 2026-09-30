@@ -1,0 +1,18 @@
+$ vitest run --config vitest.workers.config.ts
+
+ RUN  v4.1.0 /Users/tranhaibang/.gemini/antigravity-ide/scratch/docs-manager/docs-manager
+
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+console warning; message = An event handler returned a promise that will be ignored. Event handlers should not have a return value and should not be async functions.
+
+ Test Files  3 passed (3)
+      Tests  21 passed (21)
+   Start at  08:24:37
+   Duration  13.45s (transform 922ms, setup 4.27s, import 46ms, tests 7.87s, environment 0ms)
+

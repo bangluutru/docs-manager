@@ -3,10 +3,11 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { z } from "zod";
-import { DraftDocumentSchema, DOCUMENT_TYPES, type DraftDocument } from "../domain/document";
+import { DraftDocumentSchema, DecimalInputSchema, DOCUMENT_TYPES, type DraftDocument } from "../domain/document";
 import { calculateDocumentTax } from "../domain/tax";
 import { formatDocumentNumber, DEFAULT_NUMBERING } from "../domain/numbering";
 import { renderDocumentHtml, type DocumentViewModel } from "../jds/render";
+import { pagination, pageResult } from "./pagination";
 import puppeteer from "@cloudflare/puppeteer";
 
 interface Env {
@@ -110,7 +111,7 @@ const CounterpartyInput = z.object({
 const ProductInput = z.object({
   code: z.string().trim().min(1).max(40), name: z.string().trim().min(1).max(200),
   description: z.string().max(300).optional().default(""), unit: z.string().trim().min(1).max(20),
-  unitPrice: z.string().regex(/^\d+(?:\.\d{1,4})?$/),
+  unitPrice: DecimalInputSchema,
   taxClass: z.enum(["STANDARD_10", "REDUCED_8", "NON_TAXABLE", "OUT_OF_SCOPE", "EXEMPT"]),
 });
 
@@ -146,9 +147,13 @@ app.get("/api/v1/counterparties", async (c) => {
   const role = c.req.query("role") ?? "customer";
   if (!(["customer", "supplier", "all"] as const).includes(role as "customer" | "supplier" | "all")) return errorResponse("VALIDATION_ERROR", "取引先区分を確認してください。", 422);
   const roleFilter = role === "all" ? "1=1" : `${role === "supplier" ? "is_supplier" : "is_customer"}=1`;
-  const rows = await c.env.DB.prepare(`SELECT id,name,kana,is_customer,is_supplier,postal_code,prefecture,address,building,phone,email,notes,active FROM counterparties WHERE organization_id=? AND active=1 AND ${roleFilter} AND (?='' OR normalized_name LIKE ? ESCAPE '\\') ORDER BY normalized_name,id LIMIT 100`)
-    .bind(orgId,query,`%${query.replace(/[\\%_]/g,"\\$&").toLowerCase()}%`).all();
-  return c.json({ data: rows.results });
+  let page;try{page=await pagination(new URL(c.req.url),"counterparties",[orgId,query,role]);}catch{return errorResponse("INVALID_PAGE","検索条件またはページを確認してください。",422);}
+  const normalizedQuery=query.normalize("NFKC").toLowerCase().replace(/[\\%_]/g,"\\$&");
+  const rows = await c.env.DB.prepare(`SELECT id,name,kana,normalized_name,is_customer,is_supplier,postal_code,prefecture,address,building,phone,email,notes,active FROM counterparties
+    WHERE organization_id=? AND active=1 AND ${roleFilter} AND (?='' OR normalized_name LIKE ? ESCAPE '\\')
+    AND (?='' OR normalized_name>? OR (normalized_name=? AND id>?)) ORDER BY normalized_name,id LIMIT ?`)
+    .bind(orgId,query,`%${normalizedQuery}%`,page.id,page.sort,page.sort,page.id,page.limit+1).all();
+  return c.json(pageResult(rows.results,page,"normalized_name"));
 });
 
 app.post("/api/v1/counterparties", async (c) => {
@@ -166,9 +171,13 @@ app.post("/api/v1/counterparties", async (c) => {
 
 app.get("/api/v1/products", async (c) => {
   const orgId = c.get("actor").organizationId; const query = (c.req.query("q") ?? "").trim().slice(0,100);
-  const rows = await c.env.DB.prepare("SELECT id,code,name,description,unit,unit_price_decimal,tax_class FROM products WHERE organization_id=? AND active=1 AND (?='' OR name LIKE ? OR code LIKE ?) ORDER BY name,id LIMIT 100")
-    .bind(orgId,query,`%${query}%`,`%${query}%`).all();
-  return c.json({ data: rows.results });
+  let page;try{page=await pagination(new URL(c.req.url),"products",[orgId,query]);}catch{return errorResponse("INVALID_PAGE","検索条件またはページを確認してください。",422);}
+  const pattern=`%${query.replace(/[\\%_]/g,"\\$&")}%`;
+  const rows = await c.env.DB.prepare(`SELECT id,code,name,description,unit,unit_price_decimal,tax_class FROM products
+    WHERE organization_id=? AND active=1 AND (?='' OR name LIKE ? ESCAPE '\\' OR code LIKE ? ESCAPE '\\')
+    AND (?='' OR name>? OR (name=? AND id>?)) ORDER BY name,id LIMIT ?`)
+    .bind(orgId,query,pattern,pattern,page.id,page.sort,page.sort,page.id,page.limit+1).all();
+  return c.json(pageResult(rows.results,page,"name"));
 });
 
 app.post("/api/v1/products", async (c) => {
@@ -196,7 +205,7 @@ const RevisionRowSchema = z.object({
 
 async function revisionFor(c: Context<AppEnv>, docId: string, effective = false) {
   const actor = c.get("actor");
-  const row = await c.env.DB.prepare(`SELECT r.*,d.type,d.number,d.counterparty_id FROM documents d JOIN document_revisions r ON r.organization_id=d.organization_id AND r.document_id=d.id
+  const row = await c.env.DB.prepare(`SELECT r.*,d.type,d.number FROM documents d JOIN document_revisions r ON r.organization_id=d.organization_id AND r.document_id=d.id
     WHERE d.organization_id=? AND d.id=? AND r.id=${effective ? "d.current_issued_revision_id" : "COALESCE(d.active_draft_revision_id,d.current_issued_revision_id)"}`)
     .bind(actor.organizationId,docId).first<Record<string, unknown>>();
   if (!row) return null;
@@ -209,13 +218,13 @@ function viewModel(record: Awaited<ReturnType<typeof revisionFor>>): DocumentVie
   if (!record) throw new Error("Document not found");
   const row = record.row;
   const recipient = JSON.parse(row.recipient_snapshot_json) as { name?: string; postalCode?:string; address?:string; building?:string; phone?:string; department?: string; contact?: string; override?: string };
-  const issuer = JSON.parse(row.issuer_snapshot_json) as { legalName?: string; postalCode?: string; address?: string; phone?: string; representative?: string; registrationNumber?: string };
+  const issuer = JSON.parse(row.issuer_snapshot_json) as { legalName?: string; postalCode?: string; address?: string; phone?: string; representative?: string; registrationNumber?: string; qualifiedMode?: boolean };
   const typeFields = JSON.parse(String((row as unknown as Record<string, unknown>).type_fields_json ?? "{}")) as Partial<DraftDocument>;
   const renderSettings = JSON.parse(row.render_settings_json) as {theme?:"standard"|"modern";accentColor?:string};
   return {
     id: row.document_id, number: row.number ?? "", revision: row.revision, status: row.state,
     data: { type: row.type, recipientName: recipient.name ?? "",recipientPostalCode:recipient.postalCode??"",recipientAddress:recipient.address??"",recipientBuilding:recipient.building??"",recipientPhone:recipient.phone??"", department: recipient.department ?? "", contactName: recipient.contact ?? "", recipientOverride: recipient.override ?? "", subject: row.subject, issueDate: row.issue_date, transactionDate:row.transaction_date??undefined,periodStart:row.period_start??undefined,periodEnd:row.period_end??undefined,dueDate: row.due_date ?? undefined, validUntil: typeFields.validUntil??undefined, deliveryDate:typeFields.deliveryDate??undefined,requestedDeliveryDate:typeFields.requestedDeliveryDate??undefined,acceptedDate:typeFields.acceptedDate??undefined,deliveryPlace:typeFields.deliveryPlace??"",paymentTerms:typeFields.paymentTerms??"",purchaseOrderNumber:typeFields.purchaseOrderNumber??"",quotationReference:typeFields.quotationReference??"",purpose:typeFields.purpose??"",paymentMethod:typeFields.paymentMethod??"BANK_TRANSFER",showAmounts: typeFields.showAmounts ?? false,counterpartyId:row.counterparty_id??undefined, notes: row.notes, taxMode: row.tax_mode, lines: record.items.map((item:Record<string,unknown>) => ({ id: String(item.id), description: String(item.description), quantity: String(item.quantity_decimal), unit: String(item.unit), unitPrice: String(item.unit_price_decimal), taxClass: item.tax_class as DraftDocument["lines"][number]["taxClass"] })) },
-    issuer: { legalName: issuer.legalName ?? "", postalCode: issuer.postalCode, address: issuer.address, phone: issuer.phone, representative: issuer.representative, registrationNumber: issuer.registrationNumber },
+    issuer: { legalName: issuer.legalName ?? "", postalCode: issuer.postalCode, address: issuer.address, phone: issuer.phone, representative: issuer.representative, registrationNumber: issuer.registrationNumber, qualifiedMode: issuer.qualifiedMode ?? Boolean(issuer.registrationNumber) },
     theme: renderSettings.theme ?? "standard", accentColor: renderSettings.accentColor ?? "#315b78", tax: { mode: row.tax_mode, taxRounding: row.tax_rounding, lineRounding: row.line_rounding },
   };
 }
@@ -242,7 +251,7 @@ async function insertDraft(c: Context<AppEnv>, data: DraftDocument, options: Dra
   const lineRounding = snapshot?.line_rounding ?? String(org.line_rounding);
   const tax = calculateDocumentTax(data.lines, { mode: data.taxMode, lineRounding: lineRounding as "floor"|"half-up"|"ceil", taxRounding: taxRounding as "floor"|"half-up"|"ceil" });
   const recipient = { name:data.recipientName,postalCode:data.recipientPostalCode,address:data.recipientAddress,building:data.recipientBuilding,phone:data.recipientPhone,department:data.department,contact:data.contactName,override:data.recipientOverride };
-  const issuerJson = snapshot?.issuer_snapshot_json ?? JSON.stringify({ legalName:org.legal_name || org.display_name,postalCode:org.postal_code,address:[org.prefecture,org.address,org.building].filter(Boolean).join(""),phone:org.phone,representative:org.representative,registrationNumber:org.registration_number });
+  const issuerJson = snapshot?.issuer_snapshot_json ?? JSON.stringify({ legalName:org.legal_name || org.display_name,postalCode:org.postal_code,address:[org.prefecture,org.address,org.building].filter(Boolean).join(""),phone:org.phone,representative:org.representative,registrationNumber:org.registration_number,qualifiedMode:Boolean(org.qualified_mode) });
   const bankJson = snapshot?.bank_snapshot_json ?? String(org.bank_json ?? "{}");
   const renderJson = snapshot?.render_settings_json ?? JSON.stringify({theme:org.theme,accentColor:org.accent_color});
   const response = { id:docId,revision,version:1,state:"DRAFT",number:null,totals:tax };
@@ -317,19 +326,22 @@ app.get("/api/v1/documents", async (c) => {
   if(status==="PARTIALLY_PAID")conditions.push("payment_status='PARTIALLY_PAID'");
   if(status==="PAID")conditions.push("payment_status='PAID'");
   if(status==="OVERDUE")conditions.push("overdue=1");
+  let page;try{page=await pagination(new URL(c.req.url),"documents",[actor.organizationId,type??"",query,from,to,min,max,counterparty,status]);}catch{return errorResponse("INVALID_PAGE","検索条件またはページを確認してください。",422);}
+  conditions.push("(?='' OR issue_date<? OR (issue_date=? AND id<?))");
+  binds.push(page.id,page.sort,page.sort,page.id,page.limit+1);
   const rows = await c.env.DB.prepare(`WITH candidates AS (
-      SELECT d.id,d.type,d.number,d.counterparty_id,r.revision,r.state,r.subject,r.issue_date,r.due_date,r.total_yen,r.recipient_search_name,
+      SELECT d.id,d.type,d.number,r.counterparty_id,CASE WHEN d.current_issued_revision_id IS NOT NULL AND d.active_draft_revision_id IS NOT NULL THEN 1 ELSE 0 END has_correction,r.revision,r.state,r.subject,r.issue_date,r.due_date,r.total_yen,r.recipient_search_name,
         COALESCE((SELECT SUM(p.amount_yen) FROM payments p WHERE p.organization_id=d.organization_id AND p.invoice_document_id=d.id AND p.voided_at IS NULL),0) paid_yen,
         CASE WHEN d.type='INV' AND r.state='ISSUED' AND r.total_yen>0 AND COALESCE((SELECT SUM(p.amount_yen) FROM payments p WHERE p.organization_id=d.organization_id AND p.invoice_document_id=d.id AND p.voided_at IS NULL),0)=r.total_yen THEN 'PAID'
           WHEN d.type='INV' AND r.state='ISSUED' AND COALESCE((SELECT SUM(p.amount_yen) FROM payments p WHERE p.organization_id=d.organization_id AND p.invoice_document_id=d.id AND p.voided_at IS NULL),0)>0 THEN 'PARTIALLY_PAID'
           WHEN d.type='INV' AND r.state='ISSUED' THEN 'UNPAID' ELSE NULL END payment_status,
         CASE WHEN d.type='INV' AND r.state='ISSUED' AND r.due_date IS NOT NULL AND r.due_date<?
           AND r.total_yen>COALESCE((SELECT SUM(p.amount_yen) FROM payments p WHERE p.organization_id=d.organization_id AND p.invoice_document_id=d.id AND p.voided_at IS NULL),0) THEN 1 ELSE 0 END overdue
-      FROM documents d JOIN document_revisions r ON r.organization_id=d.organization_id AND r.document_id=d.id AND r.id=COALESCE(d.active_draft_revision_id,d.current_issued_revision_id)
+      FROM documents d JOIN document_revisions r ON r.organization_id=d.organization_id AND r.document_id=d.id AND r.id=${status==="DRAFT" ? "d.active_draft_revision_id" : "COALESCE(d.current_issued_revision_id,d.active_draft_revision_id)"}
       WHERE d.organization_id=?
-    ) SELECT * FROM candidates WHERE ${conditions.join(" AND ")} ORDER BY issue_date DESC,id DESC LIMIT 100`)
+    ) SELECT * FROM candidates WHERE ${conditions.join(" AND ")} ORDER BY issue_date DESC,id DESC LIMIT ?`)
     .bind(...binds).all();
-  return c.json({ data: rows.results });
+  return c.json(pageResult(rows.results,page,"issue_date"));
 });
 
 app.post("/api/v1/documents", async (c) => {
@@ -376,6 +388,8 @@ app.post("/api/v1/documents/:id/payments", async (c) => {
   const key=idempotencyKey(c);if(!key)return errorResponse("IDEMPOTENCY_KEY_REQUIRED","リクエストキーを指定してください。",422);
   const hash=await requestFingerprint(body.data);const operation=`payment:${docId}`;
   const replay=await replayIdempotency(c,operation,key,hash);if(replay)return replay;
+  const correction=await c.env.DB.prepare("SELECT 1 FROM documents WHERE organization_id=? AND id=? AND active_draft_revision_id IS NOT NULL").bind(actor.organizationId,docId).first();
+  if(correction)return errorResponse("INVOICE_REVISION_IN_PROGRESS","請求書の改訂中は入金を登録できません。改訂の完了を確認してください。",409);
   const paymentId=id();const timestamp=now();const response={id:paymentId,invoiceDocumentId:docId,paymentDate:body.data.paymentDate,amountYen:body.data.amountYen,method:body.data.method,note:body.data.note};
   try{
     const results=await c.env.DB.batch([
@@ -494,6 +508,7 @@ app.patch("/api/v1/documents/:id", async (c) => {
   const docId = c.req.param("id"); const record = await revisionFor(c,docId);
   if (!record || record.row.state !== "DRAFT") return errorResponse("DOCUMENT_LOCKED", "発行済みの帳票は直接編集できません。", 409);
   if (record.row.version !== version) return errorResponse("VERSION_CONFLICT", "別の変更が保存されています。最新の内容を読み込み直してください。", 409);
+  if (parsed.data.type !== record.row.type) return errorResponse("DOCUMENT_TYPE_IMMUTABLE", "帳票の種類は変更できません。新しい帳票を作成してください。", 422);
   const data = parsed.data; const timestamp = now(); const revisionId = record.row.id; const nextVersion = version + 1;
   const tax = calculateDocumentTax(data.lines, {mode:data.taxMode,lineRounding:record.row.line_rounding,taxRounding:record.row.tax_rounding});
   const recipient = JSON.stringify({name:data.recipientName,postalCode:data.recipientPostalCode,address:data.recipientAddress,building:data.recipientBuilding,phone:data.recipientPhone,department:data.department,contact:data.contactName,override:data.recipientOverride});
@@ -503,7 +518,7 @@ app.patch("/api/v1/documents/:id", async (c) => {
     WHERE organization_id=? AND document_id=? AND id=? AND state='DRAFT' AND version=?`)
     .bind(nextVersion,data.counterpartyId||null,recipient,data.recipientName,data.issueDate,data.transactionDate??null,data.periodStart??null,data.periodEnd??null,data.dueDate ?? null,data.subject,data.taxMode,tax.subtotalYen,tax.taxYen,tax.totalYen,JSON.stringify(tax.groups),data.notes,JSON.stringify(typeFields),timestamp,actor.organizationId,docId,revisionId,version);
   const statements: D1PreparedStatement[] = [update,
-    c.env.DB.prepare(`UPDATE documents SET counterparty_id=? WHERE organization_id=? AND id=? AND active_draft_revision_id=? AND EXISTS(SELECT 1 FROM document_revisions WHERE id=? AND organization_id=? AND version=? AND state='DRAFT')`).bind(data.counterpartyId||null,actor.organizationId,docId,revisionId,revisionId,actor.organizationId,nextVersion),
+    c.env.DB.prepare(`UPDATE documents SET counterparty_id=? WHERE organization_id=? AND id=? AND current_issued_revision_id IS NULL AND active_draft_revision_id=? AND EXISTS(SELECT 1 FROM document_revisions WHERE id=? AND organization_id=? AND version=? AND state='DRAFT')`).bind(data.counterpartyId||null,actor.organizationId,docId,revisionId,revisionId,actor.organizationId,nextVersion),
     c.env.DB.prepare(`DELETE FROM document_items WHERE organization_id=? AND revision_id=? AND EXISTS(SELECT 1 FROM document_revisions WHERE id=? AND organization_id=? AND version=?)`).bind(actor.organizationId,revisionId,revisionId,actor.organizationId,nextVersion),
   ];
   for (const [position,line] of data.lines.entries()) statements.push(c.env.DB.prepare(`INSERT INTO document_items(id,organization_id,revision_id,position,description,quantity_decimal,unit,unit_price_decimal,tax_class,line_amount_yen)
@@ -526,6 +541,53 @@ app.patch("/api/v1/documents/:id", async (c) => {
   return c.json({ data: { saved:true,version:nextVersion,totalYen:tax.totalYen } });
 });
 
+app.post("/api/v1/documents/:id/refresh-issuer",async(c)=>{
+  const actor=c.get("actor");const docId=c.req.param("id");const record=await revisionFor(c,docId);
+  if(!record||record.row.state!=="DRAFT")return errorResponse("DOCUMENT_LOCKED","下書きのみ発行者情報を更新できます。",409);
+  if(record.row.revision>0&&!requireAdmin(actor))return errorResponse("FORBIDDEN","改訂書類の更新は管理者のみ実行できます。",403);
+  const version=Number(c.req.header("If-Match"));
+  if(!Number.isSafeInteger(version)||version!==record.row.version)return errorResponse("VERSION_CONFLICT","最新の下書きを確認してください。",409);
+  const org=await c.env.DB.prepare(`SELECT o.legal_name,o.display_name,o.postal_code,o.prefecture,o.address,o.building,o.phone,o.representative,s.registration_number,s.qualified_mode
+    FROM organizations o JOIN organization_settings s ON s.organization_id=o.id WHERE o.id=?`).bind(actor.organizationId).first<Record<string,unknown>>();
+  if(!org)return errorResponse("NOT_FOUND","会社情報がありません。",404);
+  const issuer=JSON.stringify({legalName:org.legal_name||org.display_name,postalCode:org.postal_code,address:[org.prefecture,org.address,org.building].filter(Boolean).join(""),phone:org.phone,representative:org.representative,registrationNumber:org.registration_number,qualifiedMode:Boolean(org.qualified_mode)});
+  const timestamp=now();
+  try{await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE document_revisions SET issuer_snapshot_json=?,version=version+1,updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=?").bind(issuer,timestamp,actor.organizationId,record.row.id,version),
+    c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'stale draft version' WHERE changes()<>1"),
+    c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(id(),actor.organizationId,actor.id,"DRAFT_ISSUER_REFRESHED","DOCUMENT",docId,record.row.id,timestamp,c.get("requestId"),JSON.stringify({version:version+1})),
+  ]);}catch{return errorResponse("VERSION_CONFLICT","別の変更が保存されています。最新の内容を確認してください。",409);}
+  return c.json({data:{version:version+1}});
+});
+
+app.post("/api/v1/documents/:id/abandon-revision",async(c)=>{
+  const actor=c.get("actor");if(!requireAdmin(actor))return errorResponse("FORBIDDEN","管理者のみ改訂を取りやめられます。",403);
+  const docId=c.req.param("id");const parsed=z.object({revision:z.number().int().positive(),reason:z.string().trim().min(3).max(500)}).safeParse(await c.req.json().catch(()=>null));
+  if(!parsed.success)return errorResponse("VALIDATION_ERROR","改訂と取りやめの理由を確認してください。",422);
+  const key=idempotencyKey(c);if(!key)return errorResponse("IDEMPOTENCY_KEY_REQUIRED","リクエストキーを指定してください。",422);
+  const operation=`abandon:${docId}:${parsed.data.revision}`;const hash=await requestFingerprint(parsed.data);const replay=await replayIdempotency(c,operation,key,hash);if(replay)return replay;
+  const record=await revisionFor(c,docId);const version=Number(c.req.header("If-Match"));
+  if(!record||record.row.revision!==parsed.data.revision||!["DRAFT","ISSUING"].includes(record.row.state)||version!==record.row.version)return errorResponse("REVISION_CONFLICT","取りやめられる改訂がありません。最新の状態を確認してください。",409);
+  const timestamp=now();const response={abandoned:true};
+  try{await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE document_revisions SET state='ABANDONED',updated_at=? WHERE organization_id=? AND id=? AND state IN ('DRAFT','ISSUING') AND version=? AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND current_issued_revision_id IS NOT NULL AND active_draft_revision_id=?) AND NOT EXISTS(SELECT 1 FROM issue_jobs WHERE organization_id=? AND revision_id=? AND lease_expires_at>?)").bind(timestamp,actor.organizationId,record.row.id,version,actor.organizationId,docId,record.row.id,actor.organizationId,record.row.id,timestamp),
+    c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'stale issue version' WHERE changes()<>1"),
+    c.env.DB.prepare("UPDATE documents SET active_draft_revision_id=NULL WHERE organization_id=? AND id=? AND active_draft_revision_id=?").bind(actor.organizationId,docId,record.row.id),
+    c.env.DB.prepare("UPDATE issue_jobs SET state='FAILED',lease_token=NULL,lease_expires_at=NULL,last_error_code='ABANDONED',updated_at=? WHERE organization_id=? AND revision_id=?").bind(timestamp,actor.organizationId,record.row.id),
+    c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(id(),actor.organizationId,actor.id,"DOCUMENT_REVISION_ABANDONED","DOCUMENT",docId,record.row.id,timestamp,c.get("requestId"),JSON.stringify({reason:parsed.data.reason})),
+    c.env.DB.prepare("INSERT INTO idempotency_requests(organization_id,actor_id,operation,key,request_hash,resource_id,response_json,state,created_at) VALUES(?,?,?,?,?,?,?,'COMPLETED',?)").bind(actor.organizationId,actor.id,operation,key,hash,docId,JSON.stringify(response),timestamp),
+  ]);}catch{return errorResponse("REVISION_CONFLICT","発行処理中または状態が変わっています。しばらくしてから確認してください。",409);}
+  return c.json({data:response});
+});
+
+app.get("/api/v1/documents/:id/issue-status",async(c)=>{
+  const record=await revisionFor(c,c.req.param("id"));
+  if(!record)return errorResponse("NOT_FOUND","帳票が見つかりません。",404);
+  const job=await c.env.DB.prepare("SELECT state,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(c.get("actor").organizationId,record.row.id).first<{state:string;attempt_count:number;lease_expires_at:string|null}>();
+  return c.json({data:{state:record.row.state,version:record.row.version,jobState:job?.state??null,attemptCount:job?.attempt_count??0,
+    retryable:record.row.state==="ISSUING"&&!!job&&job.state!=="COMPLETE"&&!(job.lease_expires_at&&job.lease_expires_at>now())}});
+});
+
 app.post("/api/v1/documents/:id/issue",async(c)=>{
   const actor=c.get("actor");const docId=c.req.param("id");
   let record=await revisionFor(c,docId);
@@ -544,9 +606,12 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
       WHERE idempotency_requests.request_hash=excluded.request_hash`).bind(actor.organizationId,actor.id,operation,key,requestHash,docId,JSON.stringify(response),"COMPLETED",timestamp).run();
     return c.json({data:response});
   }
-  let job=await c.env.DB.prepare("SELECT id,state,snapshot_hash,object_key,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(actor.organizationId,record.row.id).first<{id:string;state:string;snapshot_hash:string;object_key:string;attempt_count:number;lease_expires_at:string|null}>();
+  let job=await c.env.DB.prepare("SELECT id,state,snapshot_hash,snapshot_json,object_key,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(actor.organizationId,record.row.id).first<{id:string;state:string;snapshot_hash:string;snapshot_json:string|null;object_key:string;attempt_count:number;lease_expires_at:string|null}>();
   if(record.row.state!=="DRAFT"&&record.row.state!=="ISSUING")return errorResponse("DOCUMENT_LOCKED","この帳票は発行できません。",409);
   if(record.row.state==="DRAFT"){
+    const expectedVersion=Number(c.req.header("If-Match"));
+    if(!Number.isSafeInteger(expectedVersion)||expectedVersion<1)return errorResponse("PRECONDITION_REQUIRED","最新の下書きを保存してから発行してください。",409);
+    if(expectedVersion!==record.row.version)return errorResponse("VERSION_CONFLICT","別の変更が保存されています。最新の内容を確認してください。",409);
     const data=viewModel(record).data;
     if(!data.recipientName.trim()&&!data.recipientOverride.trim())return errorResponse("ISSUE_VALIDATION","宛名を入力してください。",422);
     if(!record.row.subject.trim())return errorResponse("ISSUE_VALIDATION","件名を入力してください。",422);
@@ -592,10 +657,11 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
       if(hasAnyPeriod&&!hasFullPeriod)return errorResponse("ISSUE_VALIDATION","取引期間は開始日と終了日の両方を入力してください。",422);
       if(data.periodStart&&data.periodEnd&&data.periodStart>data.periodEnd)return errorResponse("ISSUE_VALIDATION","取引期間を確認してください。",422);
       if(data.transactionDate&&hasAnyPeriod)return errorResponse("ISSUE_VALIDATION","取引年月日と取引期間のどちらか一方を入力してください。",422);
-      if(settings?.qualified_mode){
-        if(!settings.registration_number||!/^T\d{13}$/.test(settings.registration_number))return errorResponse("ISSUE_VALIDATION","適格請求書を発行するには有効な登録番号を設定してください。",422);
+      const invoiceVm=viewModel(record);
+      if(settings?.qualified_mode || invoiceVm.issuer.qualifiedMode){
+        if(settings?.qualified_mode && (!settings.registration_number||!/^T\d{13}$/.test(settings.registration_number)))return errorResponse("ISSUE_VALIDATION","適格請求書を発行するには有効な登録番号を設定してください。",422);
         if(!data.transactionDate&&!hasFullPeriod)return errorResponse("ISSUE_VALIDATION","適格請求書には取引年月日または取引期間が必要です。",422);
-        const invoiceVm=viewModel(record);
+        if(!invoiceVm.issuer.registrationNumber || !/^T\d{13}$/.test(invoiceVm.issuer.registrationNumber) || (settings?.qualified_mode && invoiceVm.issuer.registrationNumber !== settings.registration_number))return errorResponse("ISSUER_SNAPSHOT_OUTDATED","帳票の発行者情報が現在の登録番号と一致しません。下書きの発行者情報を更新してください。",422);
         if(!invoiceVm.issuer.legalName.trim()||(!data.recipientName.trim()&&!data.recipientOverride.trim()))return errorResponse("ISSUE_VALIDATION","適格請求書には発行者名と宛名が必要です。",422);
       }
     }
@@ -609,33 +675,41 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
       const previous=current?.last_value??0;const previousPattern=current?.pattern_snapshot??pattern;const next=previous+1;
       let number:string;try{number=formatDocumentNumber(pattern,seqYear,next)}catch(e){return errorResponse("NUMBERING_INVALID",e instanceof Error?e.message:"採番設定を確認してください。",422)}
       const timestamp=now();const reservationId=id();const jobId=id();
-      const snapshot={id:record.row.id,documentId:docId,type:record.row.type,revision:record.row.revision,number,issueTimestamp:timestamp,data:viewModel(record),snapshotSchemaVersion:1};
+      const snapshot={view:{...viewModel(record),number,status:"ISSUING"},snapshotSchemaVersion:1};
+      const snapshotJson=JSON.stringify(snapshot);
       const snapshotHash=await sha256(new TextEncoder().encode(JSON.stringify(snapshot)));
       const objectKey=`organization/${actor.organizationId}/documents/${seqYear}/${docId}/revision-${record.row.revision}.pdf`;
+      try {
       const statements=await c.env.DB.batch([
         c.env.DB.prepare("INSERT INTO number_sequences(organization_id,type,year,last_value,pattern_snapshot) VALUES(?,?,?,0,?) ON CONFLICT(organization_id,type,year) DO NOTHING").bind(actor.organizationId,record.row.type,seqYear,pattern),
         c.env.DB.prepare("UPDATE number_sequences SET last_value=?,pattern_snapshot=? WHERE organization_id=? AND type=? AND year=? AND last_value=? AND pattern_snapshot=?").bind(next,pattern,actor.organizationId,record.row.type,seqYear,previous,previousPattern),
         c.env.DB.prepare("INSERT INTO number_reservations(id,organization_id,document_id,type,year,sequence_value,formatted_number,reserved_at) SELECT ?,?,?,?,?,?,?,? FROM number_sequences WHERE organization_id=? AND type=? AND year=? AND last_value=? AND pattern_snapshot=? AND NOT EXISTS(SELECT 1 FROM number_reservations WHERE organization_id=? AND document_id=?)").bind(reservationId,actor.organizationId,docId,record.row.type,seqYear,next,number,timestamp,actor.organizationId,record.row.type,seqYear,next,pattern,actor.organizationId,docId),
         c.env.DB.prepare("UPDATE documents SET number=?,number_year=?,sequence_value=? WHERE organization_id=? AND id=? AND number IS NULL AND EXISTS(SELECT 1 FROM number_reservations WHERE organization_id=? AND document_id=? AND formatted_number=?)").bind(number,seqYear,next,actor.organizationId,docId,actor.organizationId,docId,number),
-        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='jds-1',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,actor.organizationId,docId,number),
-        c.env.DB.prepare("INSERT INTO issue_jobs(id,organization_id,revision_id,state,snapshot_hash,object_key,created_at,updated_at) SELECT ?,?,?, 'PENDING',?,?,?,? WHERE EXISTS(SELECT 1 FROM document_revisions WHERE organization_id=? AND id=? AND state='ISSUING')").bind(jobId,actor.organizationId,record.row.id,snapshotHash,objectKey,timestamp,timestamp,actor.organizationId,record.row.id),
+        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='jds-1',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=? AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,expectedVersion,actor.organizationId,docId,number),
+        c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'stale issue version' WHERE changes()<>1"),
+        c.env.DB.prepare("INSERT INTO issue_jobs(id,organization_id,revision_id,state,snapshot_hash,snapshot_json,object_key,created_at,updated_at) SELECT ?,?,?, 'PENDING',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM document_revisions WHERE organization_id=? AND id=? AND state='ISSUING')").bind(jobId,actor.organizationId,record.row.id,snapshotHash,snapshotJson,objectKey,timestamp,timestamp,actor.organizationId,record.row.id),
         c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=?)").bind(id(),actor.organizationId,actor.id,"DOCUMENT_ISSUE_REQUESTED","DOCUMENT",docId,record.row.id,timestamp,c.get("requestId"),JSON.stringify({number}),jobId,actor.organizationId),
       ]);
       if((statements[1].meta.changes??0)!==1||(statements[2].meta.changes??0)!==1||(statements[4].meta.changes??0)!==1)return errorResponse("ISSUE_CONFLICT","他の操作と競合しました。画面を更新してください。",409);
-      job=await c.env.DB.prepare("SELECT id,state,snapshot_hash,object_key,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(actor.organizationId,record.row.id).first();
+      } catch { return errorResponse("ISSUE_CONFLICT","他の操作と競合しました。最新の下書きを確認してください。",409); }
+      job=await c.env.DB.prepare("SELECT id,state,snapshot_hash,snapshot_json,object_key,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(actor.organizationId,record.row.id).first();
     }else{
       if(!record.row.number)return errorResponse("ISSUE_CONFLICT","採番情報がありません。管理者に連絡してください。",409);
       const timestamp=now();const jobId=id();const reservationYear=existingReservation.year;
-      const snapshot={id:record.row.id,documentId:docId,type:record.row.type,revision:record.row.revision,number:existingReservation.formatted_number,issueTimestamp:timestamp,data:viewModel(record),snapshotSchemaVersion:1};
+      const snapshot={view:{...viewModel(record),number:existingReservation.formatted_number,status:"ISSUING"},snapshotSchemaVersion:1};
+      const snapshotJson=JSON.stringify(snapshot);
       const snapshotHash=await sha256(new TextEncoder().encode(JSON.stringify(snapshot)));
       const objectKey=`organization/${actor.organizationId}/documents/${reservationYear}/${docId}/revision-${record.row.revision}.pdf`;
+      try {
       const prepared=await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='jds-1',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,actor.organizationId,docId,existingReservation.formatted_number),
-        c.env.DB.prepare("INSERT INTO issue_jobs(id,organization_id,revision_id,state,snapshot_hash,object_key,created_at,updated_at) SELECT ?,?,?, 'PENDING',?,?,?,? WHERE EXISTS(SELECT 1 FROM document_revisions WHERE organization_id=? AND id=? AND state='ISSUING')").bind(jobId,actor.organizationId,record.row.id,snapshotHash,objectKey,timestamp,timestamp,actor.organizationId,record.row.id),
+        c.env.DB.prepare("UPDATE document_revisions SET state='ISSUING',renderer_version='jds-1',updated_at=? WHERE organization_id=? AND id=? AND state='DRAFT' AND version=? AND EXISTS(SELECT 1 FROM documents WHERE organization_id=? AND id=? AND number=?)").bind(timestamp,actor.organizationId,record.row.id,expectedVersion,actor.organizationId,docId,existingReservation.formatted_number),
+        c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'stale issue version' WHERE changes()<>1"),
+        c.env.DB.prepare("INSERT INTO issue_jobs(id,organization_id,revision_id,state,snapshot_hash,snapshot_json,object_key,created_at,updated_at) SELECT ?,?,?, 'PENDING',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM document_revisions WHERE organization_id=? AND id=? AND state='ISSUING')").bind(jobId,actor.organizationId,record.row.id,snapshotHash,snapshotJson,objectKey,timestamp,timestamp,actor.organizationId,record.row.id),
         c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=?)").bind(id(),actor.organizationId,actor.id,"DOCUMENT_ISSUE_REQUESTED","DOCUMENT",docId,record.row.id,timestamp,c.get("requestId"),JSON.stringify({number:existingReservation.formatted_number,revision:record.row.revision}),jobId,actor.organizationId),
       ]);
-      if((prepared[0].meta.changes??0)!==1||(prepared[1].meta.changes??0)!==1)return errorResponse("ISSUE_CONFLICT","改訂書類の発行処理を開始できませんでした。",409);
-      job=await c.env.DB.prepare("SELECT id,state,snapshot_hash,object_key,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(actor.organizationId,record.row.id).first();
+      if((prepared[0].meta.changes??0)!==1||(prepared[2].meta.changes??0)!==1)return errorResponse("ISSUE_CONFLICT","改訂書類の発行処理を開始できませんでした。",409);
+      } catch { return errorResponse("ISSUE_CONFLICT","他の操作と競合しました。最新の下書きを確認してください。",409); }
+      job=await c.env.DB.prepare("SELECT id,state,snapshot_hash,snapshot_json,object_key,attempt_count,lease_expires_at FROM issue_jobs WHERE organization_id=? AND revision_id=?").bind(actor.organizationId,record.row.id).first();
     }
   }
   await c.env.DB.prepare(`INSERT INTO idempotency_requests(organization_id,actor_id,operation,key,request_hash,resource_id,response_json,state,created_at) VALUES(?,?,?,?,?,?,NULL,'PENDING',?)
@@ -662,7 +736,12 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
       pdfBytes=new Uint8Array(await existing.arrayBuffer());fileHash=await sha256(pdfBytes);
       if(fileHash!==existing.customMetadata.sha256)throw new Error("ARTIFACT_HASH_MISMATCH");
     }else{
-      const rendered=await makePdf(c.env,renderDocumentHtml(viewModel(record)));
+      let frozenView=viewModel(record);
+      if(job.snapshot_json){
+        if(await sha256(new TextEncoder().encode(job.snapshot_json))!==snapshotHash)throw new Error("SNAPSHOT_HASH_MISMATCH");
+        frozenView=(JSON.parse(job.snapshot_json) as {view:DocumentViewModel}).view;
+      }
+      const rendered=await makePdf(c.env,renderDocumentHtml(frozenView));
       pdfBytes=rendered;fileHash=await sha256(pdfBytes);
       const created=await c.env.DOCUMENT_ARTIFACTS.put(job.object_key,pdfBytes,{onlyIf:{etagDoesNotMatch:"*"},httpMetadata:{contentType:"application/pdf",cacheControl:"private, no-store"},customMetadata:{sha256:fileHash,snapshotHash,rendererVersion:"jds-1"}});
       if(!created){
@@ -672,23 +751,28 @@ app.post("/api/v1/documents/:id/issue",async(c)=>{
       }
     }
     const storedAt=now();
-    await c.env.DB.prepare("UPDATE issue_jobs SET state='STORED',lease_expires_at=?,updated_at=? WHERE organization_id=? AND id=? AND lease_token=?").bind(expires,storedAt,actor.organizationId,job.id,token).run();
+    await c.env.DB.prepare("UPDATE issue_jobs SET state='STORED',lease_expires_at=?,updated_at=? WHERE organization_id=? AND id=? AND lease_token=? AND lease_expires_at>?").bind(expires,storedAt,actor.organizationId,job.id,token,storedAt).run();
     const fileId=id();
-    const completed=await c.env.DB.batch([
+    await c.env.DB.batch([
       c.env.DB.prepare("INSERT INTO document_files(id,organization_id,revision_id,kind,object_key,sha256,bytes,mime,generated_at,renderer_version) SELECT ?,?,?,?,?,?,?,'application/pdf',?,'jds-1' WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=? AND state='STORED' AND lease_token=?) ON CONFLICT(organization_id,revision_id,kind) DO NOTHING").bind(fileId,actor.organizationId,record.row.id,"ISSUED_PDF",job.object_key,fileHash,pdfBytes.byteLength,storedAt,job.id,actor.organizationId,token),
+      c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'issue finalize conflict' WHERE NOT EXISTS(SELECT 1 FROM document_files WHERE organization_id=? AND revision_id=? AND kind='ISSUED_PDF' AND object_key=? AND sha256=?)").bind(actor.organizationId,record.row.id,job.object_key,fileHash),
       c.env.DB.prepare("UPDATE document_revisions SET state='ISSUED',issued_at=?,updated_at=? WHERE organization_id=? AND id=? AND state='ISSUING' AND EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=? AND state='STORED' AND lease_token=?)").bind(storedAt,storedAt,actor.organizationId,record.row.id,job.id,actor.organizationId,token),
-      c.env.DB.prepare("UPDATE documents SET current_issued_revision_id=?,active_draft_revision_id=NULL WHERE organization_id=? AND id=? AND active_draft_revision_id=? AND EXISTS(SELECT 1 FROM document_revisions WHERE id=? AND state='ISSUED')").bind(record.row.id,actor.organizationId,docId,record.row.id,record.row.id),
+      c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'issue finalize conflict' WHERE changes()<>1"),
+      c.env.DB.prepare("UPDATE documents SET current_issued_revision_id=?,counterparty_id=?,active_draft_revision_id=NULL WHERE organization_id=? AND id=? AND active_draft_revision_id=? AND EXISTS(SELECT 1 FROM document_revisions WHERE id=? AND state='ISSUED')").bind(record.row.id,record.row.counterparty_id,actor.organizationId,docId,record.row.id,record.row.id),
+      c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'issue finalize conflict' WHERE changes()<>1"),
       c.env.DB.prepare("UPDATE issue_jobs SET state='COMPLETE',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE organization_id=? AND id=? AND state='STORED' AND lease_token=?").bind(storedAt,actor.organizationId,job.id,token),
+      c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'issue finalize conflict' WHERE changes()<>1"),
       c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM issue_jobs WHERE id=? AND organization_id=? AND state='COMPLETE')").bind(id(),actor.organizationId,actor.id,"DOCUMENT_ISSUED","DOCUMENT",docId,record.row.id,storedAt,c.get("requestId"),JSON.stringify({number:record.row.number,sha256:fileHash,bytes:pdfBytes.byteLength}),job.id,actor.organizationId),
       c.env.DB.prepare("UPDATE idempotency_requests SET response_json=?,state='COMPLETED' WHERE organization_id=? AND actor_id=? AND operation=? AND key=? AND request_hash=? AND EXISTS(SELECT 1 FROM issue_jobs WHERE organization_id=? AND id=? AND state='COMPLETE')").bind(JSON.stringify({issued:true,number:record.row.number,sha256:fileHash,pdfUrl:`/api/v1/documents/${docId}/revisions/${record.row.revision}/pdf`}),actor.organizationId,actor.id,operation,key,requestHash,actor.organizationId,job.id),
+      c.env.DB.prepare("INSERT INTO write_guard_failures(reason) SELECT 'issue finalize conflict' WHERE changes()<>1"),
     ]);
-    if((completed[0].meta.changes??0)!==1||(completed[1].meta.changes??0)!==1||(completed[2].meta.changes??0)!==1||(completed[3].meta.changes??0)!==1||(completed[5].meta.changes??0)!==1)throw new Error("ISSUE_FINALIZE_CONFLICT");
     return c.json({data:{issued:true,number:record.row.number,sha256:fileHash,pdfUrl:`/api/v1/documents/${docId}/revisions/${record.row.revision}/pdf`}});
   }catch(error){
     const code=error instanceof Error?error.message:"PDF_RENDER_FAILED";
     console.error("document_issue_failed",{requestId:c.get("requestId"),jobId:job.id,code});
     await c.env.DB.prepare("UPDATE issue_jobs SET state='FAILED',lease_token=NULL,lease_expires_at=NULL,last_error_code=?,updated_at=? WHERE organization_id=? AND id=? AND lease_token=? AND state<>'COMPLETE'").bind(code.slice(0,80),now(),actor.organizationId,job.id,token).run().catch(()=>undefined);
     await c.env.DB.prepare("UPDATE idempotency_requests SET response_json=NULL,state='FAILED' WHERE organization_id=? AND actor_id=? AND operation=? AND key=? AND request_hash=?").bind(actor.organizationId,actor.id,operation,key,requestHash).run().catch(()=>undefined);
+    await c.env.DB.prepare("INSERT INTO audit_logs(id,organization_id,actor_id,action,entity_type,entity_id,revision_id,occurred_at,request_id,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(id(),actor.organizationId,actor.id,"DOCUMENT_ISSUE_FAILED","DOCUMENT",docId,record?.row.id??null,now(),c.get("requestId"),JSON.stringify({jobId:job.id,code:code.slice(0,80)})).run().catch(()=>undefined);
     return errorResponse("ISSUE_FAILED",code==="ARTIFACT_HASH_MISMATCH"?"保存済みのPDFを検証できません。管理者に連絡してください。":"PDFを発行できませんでした。内容を確認して再試行してください。",500);
   }
 });
@@ -787,9 +871,9 @@ app.get("/api/v1/sales/counterparties",async(c)=>{
   const month=c.req.query("month")??new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit"});
   if(!/^\d{4}-\d{2}$/.test(month))return errorResponse("VALIDATION_ERROR","対象月を確認してください。",422);
   const from=`${month}-01`;const end=new Date(`${from}T00:00:00Z`);end.setUTCMonth(end.getUTCMonth()+1);
-  const rows=await c.env.DB.prepare(`SELECT d.counterparty_id,COALESCE(c.name,r.recipient_search_name,'取引先未設定') counterparty_name,COUNT(*) invoice_count,COALESCE(SUM(r.subtotal_yen),0) sales_yen,COALESCE(SUM(r.total_yen),0) invoiced_yen
-    FROM documents d JOIN document_revisions r ON r.organization_id=d.organization_id AND r.id=d.current_issued_revision_id LEFT JOIN counterparties c ON c.organization_id=d.organization_id AND c.id=d.counterparty_id
-    WHERE d.organization_id=? AND d.type='INV' AND r.state='ISSUED' AND r.issue_date>=? AND r.issue_date<? GROUP BY COALESCE(d.counterparty_id,r.recipient_search_name),COALESCE(c.name,r.recipient_search_name,'取引先未設定') ORDER BY sales_yen DESC,counterparty_name LIMIT 100`)
+  const rows=await c.env.DB.prepare(`SELECT r.counterparty_id,COALESCE(NULLIF(r.recipient_search_name,''),'取引先未設定') counterparty_name,COUNT(*) invoice_count,COALESCE(SUM(r.subtotal_yen),0) sales_yen,COALESCE(SUM(r.total_yen),0) invoiced_yen
+    FROM documents d JOIN document_revisions r ON r.organization_id=d.organization_id AND r.id=d.current_issued_revision_id
+    WHERE d.organization_id=? AND d.type='INV' AND r.state='ISSUED' AND r.issue_date>=? AND r.issue_date<? GROUP BY COALESCE(r.counterparty_id,r.recipient_search_name),COALESCE(NULLIF(r.recipient_search_name,''),'取引先未設定') ORDER BY sales_yen DESC,counterparty_name LIMIT 100`)
     .bind(c.get("actor").organizationId,from,end.toISOString().slice(0,10)).all();
   return c.json({data:rows.results});
 });
@@ -812,7 +896,7 @@ app.onError((error,c) => {
 export default {
   fetch: app.fetch,
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
-    const cutoff = new Date(Date.now()-5*60_000).toISOString();
+    const cutoff = now();
     await env.DB.prepare(`UPDATE issue_jobs SET state='PENDING',lease_token=NULL,lease_expires_at=NULL,next_attempt_at=?,updated_at=? WHERE state='RENDERING' AND lease_expires_at<?`).bind(now(),now(),cutoff).run();
   },
 };

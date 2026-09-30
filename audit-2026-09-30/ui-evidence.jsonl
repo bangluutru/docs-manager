@@ -1,0 +1,3 @@
+{"probe":"UI01_tax_mode","formTotal":"合計\n¥1,000","previewTotal":"合計\n¥1,100"}
+{"probe":"UI02_issue_error","visibleAlerts":[],"issueButtonPresent":1}
+{"probe":"UI03_retry_after_reload","issueButtonCount":0,"retryButtonCount":0}
