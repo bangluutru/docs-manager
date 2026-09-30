@@ -8,12 +8,13 @@ const BusinessDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日付を入
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0,10) === value;
 }, "実在する日付を入力してください");
+export const DecimalInputSchema = z.string().max(16).regex(/^(0|[1-9]\d*)(?:\.\d{1,4})?$/, "0以上、小数点以下4桁までの値を入力してください");
 export const DocumentLineSchema = z.object({
   id: z.string().min(1),
   description: z.string().trim().min(1, "品名・内容を入力してください").max(300),
-  quantity: z.string().max(16).regex(/^(0|[1-9]\d*)(?:\.\d{1,4})?$/, "数量は小数点以下4桁まで入力できます").refine((value) => Number(value) > 0, "数量は0より大きい値を入力してください"),
+  quantity: DecimalInputSchema.refine((value) => Number(value) > 0, "数量は0より大きい値を入力してください"),
   unit: z.string().trim().min(1).max(20),
-  unitPrice: z.string().max(16).regex(/^(0|[1-9]\d*)(?:\.\d{1,4})?$/, "単価は小数点以下4桁まで入力できます"),
+  unitPrice: DecimalInputSchema,
   taxClass: TaxClassSchema,
 });
 export const DraftDocumentSchema = z.object({

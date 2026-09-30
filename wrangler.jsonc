@@ -3,12 +3,16 @@
   "name": "jds-business-documents",
   "main": "src/server/index.ts",
   "compatibility_date": "2026-09-29",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": [
+      "/api/*"
+    ]
   },
   "d1_databases": [
     {
@@ -19,15 +23,70 @@
     }
   ],
   "r2_buckets": [
-    { "binding": "DOCUMENT_ARTIFACTS", "bucket_name": "jds-documents-local" },
-    { "binding": "BRAND_ASSETS", "bucket_name": "jds-assets-local" }
+    {
+      "binding": "DOCUMENT_ARTIFACTS",
+      "bucket_name": "jds-documents-local"
+    },
+    {
+      "binding": "BRAND_ASSETS",
+      "bucket_name": "jds-assets-local"
+    }
   ],
-  "browser": { "binding": "BROWSER" },
+  "browser": {
+    "binding": "BROWSER"
+  },
   "vars": {
     "APP_ENV": "development",
     "ORGANIZATION_ID": "local-organization",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": ""
   },
-  "triggers": { "crons": ["*/5 * * * *"] }
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
+  "env": {
+    "production": {
+      "name": "docs-manager",
+      "account_id": "1b9498a0ce4a2d692b5639adbc2fbb37",
+      "workers_dev": true,
+      "preview_urls": false,
+      "vars": {
+        "APP_ENV": "production",
+        "ORGANIZATION_ID": "docs-manager-organization",
+        "ACCESS_TEAM_DOMAIN": "bangluutru-cfaccess.cloudflareaccess.com",
+        "ACCESS_AUD": "654eaf0484f9ca026b1b5e6ece933c74897b2c00288842be8f8fbc21152a32a6"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "docs-manager",
+          "database_id": "77a16ad0-3e61-481a-92da-895e1af6440c",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "DOCUMENT_ARTIFACTS",
+          "bucket_name": "docs-manager-documents"
+        },
+        {
+          "binding": "BRAND_ASSETS",
+          "bucket_name": "docs-manager-assets"
+        }
+      ],
+      "browser": {
+        "binding": "BROWSER"
+      },
+      "observability": {
+        "enabled": true
+      },
+      "triggers": {
+        "crons": [
+          "*/5 * * * *"
+        ]
+      }
+    }
+  }
 }

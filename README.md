@@ -21,11 +21,21 @@ Các lệnh kiểm tra:
 ```sh
 pnpm typecheck
 pnpm test
+pnpm test:db
+pnpm test:e2e
 pnpm build
 ```
 
+Kiểm tra giao diện dùng Chromium của Playwright; cài browser lần đầu bằng `pnpm exec playwright install chromium` nếu máy chưa có. Các test giao diện dùng API fixtures.
+
+Migration `0005_audit_guards.sql` bổ sung khóa phát hành/thanh toán và chuẩn hóa giá legacy. Chi tiết thay đổi, retry và bỏ correction: [Khắc phục audit](docs/AUDIT_FIXES.md).
+
 ## Phạm vi hiện tại
 
-Luồng tạo và phát hành bán hàng, lịch sử PDF, thanh toán/điều chỉnh, biên nhận, báo cáo và tìm kiếm hoạt động trong môi trường local. PO và 注文請書 hiện chỉ cho phép lưu bản nháp và xem trước; phát hành bị khóa cho tới khi chốt quyết định D08 trong `docs/IMPLEMENTATION_PLAN.md`.
+Luồng tạo và phát hành bán hàng, lịch sử PDF, thanh toán/điều chỉnh, biên nhận, báo cáo và tìm kiếm hoạt động trong môi trường local. 発注書 (PO) được phát hành từ công ty tới nhà cung cấp; 注文請書 (OC) được phát hành từ công ty tới khách hàng để xác nhận đã nhận đơn. Cả hai dùng luồng đánh số, PDF và lưu trữ chung, đồng thời kiểm tra đúng vai trò đối tác.
 
-Cloudflare Access, tài nguyên D1/R2/Browser Run thật, miền triển khai, sao lưu và quy trình khôi phục chưa được cấu hình. Không chạy lệnh `--remote` hoặc deploy cho tới khi hoàn thành các cổng vận hành trong kế hoạch.
+Production đã deploy tại https://docs-manager.bangluutru.workers.dev với Cloudflare Access, D1, R2 và Browser Run. Xem [trạng thái triển khai và các bước kiểm chứng còn lại](docs/CLOUDFLARE_DEPLOY_STATUS.md); backup/restore và các cổng release còn cần hoàn tất.
+
+## Deploy Cloudflare
+
+[Xem hướng dẫn chi tiết](docs/CLOUDFLARE_DEPLOY.md): staging/production, bindings, Access, migration, admin đầu tiên và Workers Builds.

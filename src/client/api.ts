@@ -3,7 +3,7 @@ import type { DraftDocument, DocumentType } from "../domain/document";
 export interface DocumentSummary {
   id: string; type: DocumentType; number: string | null; revision: number; state: string;
   subject: string; issue_date: string; due_date: string | null; total_yen: number; recipient_search_name: string;
-  counterparty_id:string|null;paid_yen:number;payment_status:string|null;overdue:number;
+  counterparty_id:string|null;has_correction:number;paid_yen:number;payment_status:string|null;overdue:number;
 }
 export interface DocumentFilters {from:string;to:string;minAmount:string;maxAmount:string;counterpartyId:string;status:string}
 export interface PaymentEntry {
@@ -19,14 +19,20 @@ export interface Organization {
   theme: "standard"|"modern"; accent_color: string; qualified_mode: number; registration_number: string | null;
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+export interface Page<T> {data:T[];nextCursor:string|null}
+export interface Counterparty {id:string;name:string;kana:string;is_customer:number;is_supplier:number;postal_code:string;prefecture:string;address:string;building:string;phone:string}
+export interface Product {id:string;code:string;name:string;description:string;unit:string;unit_price_decimal:string;tax_class:string}
+
+async function requestEnvelope<T>(path: string, options?: RequestInit): Promise<{data:T;nextCursor:string|null}> {
   const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options?.headers } });
-  const body = await response.json().catch(() => ({})) as { data?: T; error?: { message?: string } };
+  const body = await response.json().catch(() => ({})) as { data?: T; nextCursor?: string|null; error?: { message?: string } };
   if (!response.ok) throw new Error(body.error?.message ?? "通信に失敗しました。もう一度お試しください。");
-  return body.data as T;
+  return {data:body.data as T,nextCursor:body.nextCursor??null};
 }
+async function request<T>(path:string,options?:RequestInit):Promise<T>{return (await requestEnvelope<T>(path,options)).data;}
+function pageQuery(cursor?:string):Record<string,string>{return cursor?{cursor}:{};}
 const pendingMutationKeys = new Map<string, { fingerprint: string; key: string }>();
-async function requestIdempotently<T>(operation: string, path: string, body: unknown): Promise<T> {
+async function requestIdempotently<T>(operation: string, path: string, body: unknown, headers:Record<string,string>={}): Promise<T> {
   const serialized = JSON.stringify(body);
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized));
   const fingerprint = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -43,7 +49,7 @@ async function requestIdempotently<T>(operation: string, path: string, body: unk
   pendingMutationKeys.set(storageKey, pending);
   try { sessionStorage.setItem(storageKey, JSON.stringify(pending)); } catch { /* Memory still covers retries in this page. */ }
   try {
-    const result = await request<T>(path, { method: "POST", body: serialized, headers: { "Idempotency-Key": pending.key } });
+    const result = await request<T>(path, { method: "POST", body: serialized, headers: { "Idempotency-Key": pending.key,...headers } });
     if (pendingMutationKeys.get(storageKey)?.key === pending.key) pendingMutationKeys.delete(storageKey);
     try {
       const stored = sessionStorage.getItem(storageKey);
@@ -60,7 +66,12 @@ export const api = {
   getOrganization: () => request<Organization>("/api/v1/organization"),
   session: () => request<{actor:{role:"ADMIN"|"MEMBER";name:string;email:string}}>("/api/v1/session"),
   saveOrganization: (data: object) => request<{ saved: boolean }>("/api/v1/organization", { method: "PATCH", body: JSON.stringify(data) }),
-  documents: (query = "", type = "", filters?:Partial<DocumentFilters>) => {const params=new URLSearchParams({q:query,type});for(const [key,value] of Object.entries(filters??{})){if(value)params.set(key,value)}return request<DocumentSummary[]>(`/api/v1/documents?${params.toString()}`)},
+  documentsPage: (query="",type="",filters?:Partial<DocumentFilters>,cursor?:string) => {
+    const params=new URLSearchParams({q:query,type,...pageQuery(cursor)});
+    for(const [key,value] of Object.entries(filters??{})){if(value)params.set(key,value)}
+    return requestEnvelope<DocumentSummary[]>(`/api/v1/documents?${params}`);
+  },
+  documents: async(query="",type="",filters?:Partial<DocumentFilters>) => (await api.documentsPage(query,type,filters)).data,
   document: (id: string) => request<{ id:string;number:string;revision:number;status:string;version:number;sentAt:string|null;data:DraftDocument;issuer:{legalName:string;postalCode?:string;address?:string;phone?:string;representative?:string;registrationNumber?:string};theme:"standard"|"modern";accentColor:string;tax:{mode:"exclusive"|"inclusive";lineRounding:"floor"|"half-up"|"ceil";taxRounding:"floor"|"half-up"|"ceil"} }>(`/api/v1/documents/${encodeURIComponent(id)}`),
   createDocument: (data: DraftDocument) => request<{id:string;version:number}>("/api/v1/documents", { method: "POST", body: JSON.stringify(data) }),
   saveDocument: (id: string, version: number, data: DraftDocument) => request<{saved:boolean;version:number}>(`/api/v1/documents/${encodeURIComponent(id)}`, { method:"PATCH", headers:{"If-Match":String(version)}, body:JSON.stringify(data) }),
@@ -85,9 +96,14 @@ export const api = {
   relatedDocuments: (id:string) => request<Array<{kind:string;created_at:string;related_document_id:string;related_revision_id:string;type:string;number:string|null;subject:string;issue_date:string}>>(`/api/v1/documents/${encodeURIComponent(id)}/relations`),
   revisions: (id:string) => request<RevisionSummary[]>(`/api/v1/documents/${encodeURIComponent(id)}/revisions`),
   correctPayment: (id:string,data:{reason:string;replacement:{paymentDate:string;amountYen:number;method:string;note:string}}) => requestIdempotently<object>(`payment-correction:${id}`,`/api/v1/payments/${encodeURIComponent(id)}/corrections`,data),
-  issue: (id:string) => requestIdempotently<{issued:boolean;number:string;pdfUrl:string;sha256:string}>(`issue:${id}`,`/api/v1/documents/${encodeURIComponent(id)}/issue`,{}),
-  counterparties: (query = "", role:"customer"|"supplier"|"all"="customer") => request<Array<{id:string;name:string;kana:string;is_customer:number;is_supplier:number;postal_code:string;prefecture:string;address:string;building:string;phone:string}>>(`/api/v1/counterparties?q=${encodeURIComponent(query)}&role=${role}`),
+  refreshIssuer: (id:string,version:number) => request<{version:number}>(`/api/v1/documents/${encodeURIComponent(id)}/refresh-issuer`,{method:"POST",body:"{}",headers:{"If-Match":String(version)}}),
+  abandonRevision: (id:string,version:number,revision:number,reason:string) => requestIdempotently<{abandoned:boolean}>(`abandon:${id}:${revision}`,`/api/v1/documents/${encodeURIComponent(id)}/abandon-revision`,{revision,reason},{"If-Match":String(version)}),
+  issueStatus: (id:string) => request<{state:string;version:number;jobState:string|null;attemptCount:number;retryable:boolean}>(`/api/v1/documents/${encodeURIComponent(id)}/issue-status`),
+  issue: (id:string,version:number) => requestIdempotently<{issued:boolean;number:string;pdfUrl:string;sha256:string}>(`issue:${id}:${version}`,`/api/v1/documents/${encodeURIComponent(id)}/issue`,{}, {"If-Match":String(version)}),
+  counterpartiesPage: (query="",role:"customer"|"supplier"|"all"="customer",cursor?:string) => requestEnvelope<Counterparty[]>(`/api/v1/counterparties?${new URLSearchParams({q:query,role,...pageQuery(cursor)})}`),
+  counterparties: async(query="",role:"customer"|"supplier"|"all"="customer") => (await api.counterpartiesPage(query,role)).data,
   addCounterparty: (data: object) => request<{id:string}>("/api/v1/counterparties",{method:"POST",body:JSON.stringify(data)}),
-  products: (query = "") => request<Array<{id:string;code:string;name:string;description:string;unit:string;unit_price_decimal:string;tax_class:string}>>(`/api/v1/products?q=${encodeURIComponent(query)}`),
+  productsPage: (query="",cursor?:string) => requestEnvelope<Product[]>(`/api/v1/products?${new URLSearchParams({q:query,...pageQuery(cursor)})}`),
+  products: async(query="") => (await api.productsPage(query)).data,
   addProduct: (data: object) => request<{id:string}>("/api/v1/products",{method:"POST",body:JSON.stringify(data)}),
 };

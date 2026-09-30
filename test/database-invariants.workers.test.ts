@@ -78,7 +78,7 @@ describe("D1 migration invariants", () => {
     await expect(db.prepare("UPDATE document_revisions SET state='ISSUING' WHERE id=?")
       .bind(receipt.revisionId).run()).rejects.toThrow();
     const issueResponse = await exports.default.fetch(new Request(`http://localhost/api/v1/documents/${receipt.documentId}/issue`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "receipt-invariant-test" }, body: "{}",
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "receipt-invariant-test" }, body: "{}",
     }));
     expect(issueResponse.status).toBe(409);
     expect((await issueResponse.json() as { error: { code: string } }).error.code).toBe("RECEIPT_SNAPSHOT_MISMATCH");
@@ -116,7 +116,7 @@ describe("D1 migration invariants", () => {
     await db.prepare("UPDATE documents SET current_issued_revision_id=?,active_draft_revision_id=NULL WHERE id=?")
       .bind(source.revisionId, source.documentId).run();
     const request = (type: "DN" | "INV") => exports.default.fetch(new Request(`http://localhost/api/v1/documents/${source.documentId}/convert`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "convert-repeat-test-key" }, body: JSON.stringify({ type }),
+      method: "POST", headers: { "Content-Type": "application/json", "If-Match":"1", "Idempotency-Key": "convert-repeat-test-key" }, body: JSON.stringify({ type }),
     }));
     const first = await request("DN");
     const replay = await request("DN");
