@@ -1,6 +1,6 @@
 import { test,expect,type Page } from '@playwright/test';
 
-const organization={id:'local-organization',legal_name:'監査株式会社',display_name:'監査株式会社',postal_code:'',prefecture:'',address:'',building:'',phone:'',representative:'',default_tax_mode:'exclusive',tax_rounding:'floor',line_rounding:'floor',theme:'standard',accent_color:'#315b78',qualified_mode:0,registration_number:null};
+const organization={id:'local-organization',legal_name:'監査株式会社',display_name:'監査株式会社',postal_code:'',prefecture:'',address:'',building:'',phone:'',representative:'',default_tax_mode:'exclusive',tax_rounding:'floor',line_rounding:'floor',theme:'standard',accent_color:'#315b78',qualified_mode:0,registration_number:null,fax:'',email:'',website:'',logo_asset_id:null,seal_asset_id:null,quotation_title:'御見積書',purchase_order_title:'発注書',delivery_show_amounts:0,bank:{bankName:'',branchName:'',accountType:'ORDINARY',accountNumber:'',accountHolder:'',note:''},defaults:{paymentTerms:'',quoteValidDays:30,dueRule:'NEXT_MONTH_END',quoteNotes:'',invoiceNotes:''},numbering:{QT:'QT-{YYYY}-{####}',DN:'DN-{YYYY}-{####}',INV:'INV-{YYYY}-{####}',RC:'RC-{YYYY}-{####}',PO:'PO-{YYYY}-{####}',OC:'OC-{YYYY}-{####}'}};
 const initialData={type:'INV',recipientName:'監査顧客',recipientPostalCode:'',recipientAddress:'',recipientBuilding:'',recipientPhone:'',department:'',contactName:'',recipientOverride:'',subject:'検証',issueDate:'2026-09-29',transactionDate:'2026-09-29',dueDate:'2026-10-31',notes:'',taxMode:'exclusive',showAmounts:false,deliveryPlace:'',paymentTerms:'',purchaseOrderNumber:'',quotationReference:'',purpose:'',paymentMethod:'BANK_TRANSFER',lines:[{id:'test-line',description:'検証商品',quantity:'1',unit:'個',unitPrice:'1000',taxClass:'STANDARD_10'}]};
 async function fixtures(page:Page,initialState='DRAFT'){
  let state=initialState,version=1,attempts=0,patches=0;let data={...initialData};
@@ -9,7 +9,7 @@ async function fixtures(page:Page,initialState='DRAFT'){
  await page.route('**/api/v1/**',async route=>{
   const req=route.request();const url=new URL(req.url());const path=url.pathname;let result:unknown=[];let nextCursor:string|null=null;
   if(path.endsWith('/organization'))result=organization;
-  else if(path.endsWith('/session'))result={actor:{role:'ADMIN',name:'監査',email:'audit@example.com'}};
+  else if(path.endsWith('/session'))result={actor:{id:'audit-admin',role:'ADMIN',name:'監査',email:'audit@example.com'}};
   else if(path.endsWith('/documents/test')&&req.method()==='GET')result={id:'test',version,revision:0,number:state==='ISSUED'?'INV-2026-0001':'',status:state,sentAt:null,data,issuer:{legalName:'監査株式会社'},theme:'standard',accentColor:'#315b78',tax:{mode:data.taxMode,lineRounding:'floor',taxRounding:'floor'}};
   else if(path.endsWith('/documents/test')&&req.method()==='PATCH'){patches++;version++;data=req.postDataJSON();result={saved:true,version};}
   else if(path.endsWith('/issue-status'))result={state,version,jobState:'FAILED',attemptCount:1,retryable:state==='ISSUING'};
@@ -63,4 +63,16 @@ test('document and master lists expose additional pages',async({page})=>{
  await fixtures(page);await page.goto('/documents');await expect(page.getByText('INV-FIRST',{exact:true})).toBeVisible();
  await page.getByRole('button',{name:'帳票をさらに表示'}).click();await expect(page.getByText('INV-LATE',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'帳票をさらに表示'})).toHaveCount(0);
  await page.goto('/products');await page.getByRole('button',{name:'さらに表示',exact:true}).click();await expect(page.getByText('PAGE-104',{exact:true})).toBeVisible();
+});
+test('new documents start from the organization defaults and the guide and settings are reachable',async({page})=>{
+ await fixtures(page);await page.goto('/documents/new?type=INV');
+ const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo'}).format(new Date());const [year,month]=today.split('-').map(Number);
+ const nextMonthEnd=new Date(Date.UTC(year,month+1,0)).toISOString().slice(0,10);
+ await expect(page.getByText('支払期限',{exact:false}).locator('..').locator('input[type=date]')).toHaveValue(nextMonthEnd);
+ const preview=page.frameLocator('iframe[title="A4帳票プレビュー"]');
+ await expect(preview.locator('h1')).toHaveText('請求書');await expect(preview.locator('.items thead')).toContainText('単価');await expect(preview.locator('.breakdown')).toContainText('10%対象');
+ await page.getByRole('button',{name:'？　使い方ガイド'}).click();await expect(page.getByRole('heading',{name:'使い方ガイド'})).toBeVisible();
+ await page.getByRole('button',{name:'Tiếng Việt'}).click();await expect(page.getByRole('heading',{name:'Hướng dẫn sử dụng'})).toBeVisible();
+ await page.goto('/settings/bank');await expect(page.getByRole('heading',{name:'振込先'})).toBeVisible();
+ await page.goto('/settings/documents');await expect(page.getByText('例：INV-'+year+'-0001')).toBeVisible();
 });
