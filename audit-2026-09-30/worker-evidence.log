@@ -15,4 +15,3 @@ console warning; message = An event handler returned a promise that will be igno
       Tests  21 passed (21)
    Start at  08:24:37
    Duration  13.45s (transform 922ms, setup 4.27s, import 46ms, tests 7.87s, environment 0ms)
-
