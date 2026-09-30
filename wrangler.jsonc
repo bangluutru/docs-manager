@@ -50,13 +50,13 @@
     "production": {
       "name": "docs-manager",
       "account_id": "1b9498a0ce4a2d692b5639adbc2fbb37",
-      "workers_dev": false,
+      "workers_dev": true,
       "preview_urls": false,
       "vars": {
         "APP_ENV": "production",
         "ORGANIZATION_ID": "docs-manager-organization",
         "ACCESS_TEAM_DOMAIN": "bangluutru-cfaccess.cloudflareaccess.com",
-        "ACCESS_AUD": ""
+        "ACCESS_AUD": "654eaf0484f9ca026b1b5e6ece933c74897b2c00288842be8f8fbc21152a32a6"
       },
       "d1_databases": [
         {

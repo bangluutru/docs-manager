@@ -41,4 +41,4 @@ Worker tests dùng database test riêng. UI tests mock API, chưa chứng minh B
 
 Bản sửa này đóng các lỗi F01–F10 đã tái hiện trong audit, chưa hoàn tất mọi hạng mục sản phẩm/release trong IMPLEMENTATION_PLAN.md. Vẫn cần cấu hình và kiểm chứng Access/role matrix thực tế, bindings staging/production, PDF font tiếng Nhật và pagination/layout đủ loại/theme, backup/restore, CI/observability/alerts, tải và fault injection cloud. Các workflow master/settings và policy ngày phát hành còn phải đối chiếu acceptance của kế hoạch.
 
-Chưa deploy hoặc sửa tài nguyên production. Hướng dẫn triển khai cloud và bootstrap organization nằm trong CLOUDFLARE_DEPLOY.md; trạng thái commit/push được ghi trong lịch sử Git.
+Sau checkpoint audit, production đã được triển khai với D1/R2/Browser Run và Access cho hai email được chủ tài khoản cho phép. Xem CLOUDFLARE_DEPLOY_STATUS.md để phân biệt phần đã triển khai với acceptance chưa kiểm chứng; hướng dẫn và bootstrap nằm trong CLOUDFLARE_DEPLOY.md.
