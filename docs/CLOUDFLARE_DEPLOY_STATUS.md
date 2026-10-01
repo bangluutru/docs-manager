@@ -36,7 +36,7 @@ No other existing database was modified or deleted by this deployment. The owner
 
 - PR #3 merged to `main` (merge commit `f13517c`).
 - Migration `0006_company_profile.sql` applied to remote D1. Time Travel bookmark taken just before it: `000000df-00000000-000050f6-d14ca0c1f88bf138420d0047219e506d`.
-- Worker deployed, version `3a21b6f2-3e39-47f4-b61c-f602c059078d`; bindings DB, DOCUMENT_ARTIFACTS, BRAND_ASSETS, BROWSER, ASSETS and the five-minute cron unchanged.
+- Worker deployed as version `3a21b6f2-3e39-47f4-b61c-f602c059078d`, then redeployed from the same code as the current version `248456cc-bacf-4835-9938-1c94b16d8b9f`; bindings DB, DOCUMENT_ARTIFACTS, BRAND_ASSETS, BROWSER, ASSETS and the five-minute cron unchanged.
 - Unauthenticated requests to `/`, `/api/v1/health` and `/api/v1/organization` still redirect to Cloudflare Access login.
 
 Still to check after signing in: fill 設定 (company, bank, seal), issue one test document and review the PDF from the managed browser.
